@@ -237,10 +237,53 @@ export function readKeyInRow(lines, rowId, key) {
 }
 
 /**
+ * 数值 → 百分比文本（0.3 → `30%`，0.025 → `2.5%`）。
+ * @param value - 比例。
+ * @returns 不带多余零的百分比文本。
+ */
+function percentText(value) {
+  return `${Number((value * 100).toFixed(2))}%`
+}
+
+/**
+ * 某一个键在**当前取值**下的规范注释文本。
+ * @param key - 键名。
+ * @param value - 即将写入的值。
+ * @returns 注释正文；该键没有规范说法时返回 null（保持原注释不动）。
+ */
+function canonicalComment(key, value) {
+  if (key === 'thresholdRatio') return `窗口占用达 ${percentText(Number(value))} 时触发压缩`
+  if (key === 'retainRatio') return `压缩后保留最近 ${percentText(Number(value))} 窗口的原文`
+  if (key === 'bootstrapMaxTokens') return '受控阶段单次请求的输出预算'
+  return null
+}
+
+/**
+ * 值改了，行尾那句**带数字**的注释就过时了 —— 刷新它，避免文件里留着自相矛盾的解释
+ * （真实案例：`retainRatio: 0.02  # 压缩后保留最近 5% 窗口 = 50K 原文`）。
+ *
+ * 只碰"注释里出现数字"的行：那种注释是照着旧值算出来的。没有数字的注释是用户自己的话
+ * （为什么这么设、注意什么），一律原样保留；本来没有注释的行也不替用户加。
+ *
+ * @param key - 键名。
+ * @param value - 即将写入的值。
+ * @param tail - 值后面的原始尾巴（对齐空白 + 可能的行内注释）。
+ * @returns 新的尾巴。
+ */
+function refreshComment(key, value, tail) {
+  const comment = /#(.*)$/.exec(tail)
+  if (comment === null || !/[0-9]/.test(comment[1])) return tail
+  const text = canonicalComment(key, value)
+  if (text === null) return tail
+  return `${tail.slice(0, comment.index)}# ${text}`
+}
+
+/**
  * 就地改写一个 row 的 `config` 块里某个键；键不存在时插到 `config:` 的第一行。
  *
- * 只动这一行的**值**，其余文本原样保留 —— 包括行内注释后面的部分、缩进、以及文件其它行。
- * 真实 preset 里阈值后面就跟着一句解释为什么是这个数，那是有价值的信息，不能被改配置抹掉。
+ * 只动这一行的**值**，其余文本原样保留 —— 包括缩进、以及文件其它行。行内注释是个例外：
+ * 带数字的那种是照着旧值算出来的，值一改就该跟着改（见 {@link refreshComment}），
+ * 否则解释会和值打架。没有数字的注释（"为什么设成这样"）照旧原样留着。
  *
  * @param lines - 文件按行切开的结果（**就地修改**）。
  * @param rowId - 目标 row 的 id。
@@ -257,9 +300,9 @@ export function setKeyInRow(lines, rowId, key, value) {
     if (match === null) continue
     if (match[1].length <= located.configIndent) break
     if (match[2] !== key) continue
-    // 保留值后面的原始尾巴：对齐空白 + 行内注释；没有注释时是空串或行尾空白。
+    // 值后面的尾巴：对齐空白 + 行内注释；没有注释时是空串或行尾空白。
     const { tail } = splitScalar(match[3])
-    const next = `${match[1]}${key}: ${value}${tail}`
+    const next = `${match[1]}${key}: ${value}${refreshComment(key, value, tail)}`
     if (next === lines[i]) return false
     lines[i] = next
     return true

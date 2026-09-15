@@ -112,13 +112,31 @@ check('an unknown row is left alone', setKeyInRow(lines(), 'no-such-row', 'x', '
 // 第一版没覆盖这个形态，结果既读不到值（注释被当成值 → NaN），写回时还会把注释抹掉。
 const inline = lines()
 setKeyInRow(inline, 'compaction-basic', 'thresholdRatio', '0.35')
-check('a rewritten line keeps its inline comment verbatim',
-  inline[10] === '        thresholdRatio: 0.35   # 1M 窗口 x 0.2 = 200K 触发压缩', JSON.stringify(inline[10]))
+check('a numeric inline comment is refreshed with the new value',
+  inline[10] === '        thresholdRatio: 0.35   # 窗口占用达 35% 时触发压缩', JSON.stringify(inline[10]))
 check('a value with an inline comment still reads as a plain scalar',
   readKeyInRow(lines(), 'compaction-basic', 'retainRatio') === '0.05',
   String(readKeyInRow(lines(), 'compaction-basic', 'retainRatio')))
-check('the whole file stays byte-identical except the edited value',
-  inline.join('\n').replace('0.35', '0.2') === FIXTURE)
+check('the comment on a line we did not touch is untouched',
+  inline.join('\n').includes('    # 阈值：越低越早压'))
+
+// 注释里没有数字的，是用户自己的话，原样保留；本来没有注释的行也不替他加。
+const prose = lines()
+setKeyInRow(prose, 'compaction-basic', 'maxTokens', '4096')
+check('a comment without digits is left exactly as written',
+  prose[11] === '        retainRatio: 0.05     # 压缩后保留最近 5% 窗口'
+  && prose.join('\n').includes('        maxTokens: 4096'), JSON.stringify(prose[11]))
+const bare = lines()
+setKeyInRow(bare, 'tool-bootstrap', 'bootstrapMaxTokens', '4096')
+check('a line without a comment gains none',
+  bare[19] === '    bootstrapMaxTokens: 4096', JSON.stringify(bare[19]))
+const retain = lines()
+setKeyInRow(retain, 'compaction-basic', 'retainRatio', '0.02')
+check('the retention comment is refreshed too',
+  retain[11] === '        retainRatio: 0.02     # 压缩后保留最近 2% 窗口的原文', JSON.stringify(retain[11]))
+check('only the target line changed',
+  retain.filter((line, i) => line !== lines()[i]).length === 1,
+  `${retain.filter((line, i) => line !== lines()[i]).length} line(s)`)
 check('a # inside a quoted scalar is not treated as a comment',
   readKeyInRow(['- id: x', '  config:', "    url: 'a # b'", '    n: 1   # 注释'], 'x', 'url') === "'a # b'",
   String(readKeyInRow(['- id: x', '  config:', "    url: 'a # b'", '    n: 1   # 注释'], 'x', 'url')))
@@ -144,7 +162,8 @@ check('the pre-write content is backed up',
   && fs.readFileSync(`${target}.bak-compact-agents`, 'utf8').includes('thresholdRatio: 0.2'))
 check('no temporary file is left behind', !fs.existsSync(`${target}.compact-agents.tmp`))
 check('the untouched parts are byte-identical',
-  after.replace('0.35', '0.2') === FIXTURE, 'normalised compare')
+  after.replace('thresholdRatio: 0.35   # 窗口占用达 35% 时触发压缩',
+    'thresholdRatio: 0.2   # 1M 窗口 x 0.2 = 200K 触发压缩') === FIXTURE, 'normalised compare')
 check('a second identical write is a no-op',
   writePresetValues({ thresholdRatio: 0.35 }, [target])[0].status === 'unchanged')
 check('an out-of-range value is rejected, not written',
