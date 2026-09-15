@@ -1,0 +1,91 @@
+{
+  "name": "dsh-compact-agents",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 会话上下文强制压缩插件:模型可调用的 compact_agents 工具,忽略自动压力阈值,覆盖进程内所有活会话(主会话/子代理/AgentTeams 成员),忙则排队、本轮结束补压,逐目标回报遮蔽节点数与估算 token 数。Session-context force-compaction plugin for DeepSeek Harness: a model-callable compact_agents tool that ignores the automatic pressure threshold and covers every live session in the process (main session, sub-agents, AgentTeams members alike), queues a busy target and compacts it when its turn ends, and reports shadowed node counts and estimated tokens per target.",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "compatibility": {
+      "dsh": ">=0.1.0-rc.5",
+      "dshReleases": {
+        "0.1.5-rc.2": "compatible"
+      }
+    }
+  },
+  "dshhub": {
+    "schemaVersion": 1,
+    "displayName": "dsh-compact-agents",
+    "summary": "DeepSeek Harness 上下文强制压缩:模型可调用的 compact_agents 工具,覆盖所有活会话(主会话/子代理/AgentTeams 成员),忙则排队、本轮结束补压,逐目标回报遮蔽节点数与估算 token 数。",
+    "categories": [
+      "上下文",
+      "Agent",
+      "运维"
+    ],
+    "surfaces": [
+      "host"
+    ],
+    "capabilities": {
+      "provides": []
+    },
+    "compatibility": {
+      "dsh": ">=0.1.0-rc.5",
+      "node": ">=20"
+    },
+    "permissions": {
+      "network": []
+    }
+  },
+  "files": [
+    "index.js",
+    "scripts",
+    "docs",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhuto666/dsh-compact-agents.git"
+  },
+  "homepage": "https://github.com/zhuto666/dsh-compact-agents#readme",
+  "bugs": {
+    "url": "https://github.com/zhuto666/dsh-compact-agents/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "compaction",
+    "context",
+    "agent",
+    "subagent",
+    "agent-teams",
+    "token",
+    "cost",
+    "zh",
+    "en"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "install-plugin": "node scripts/install.mjs",
+    "uninstall-plugin": "node scripts/uninstall.mjs",
+    "validate": "node scripts/validate-presets.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/deferred-test.mjs && node scripts/integration-test.mjs && node scripts/validate-presets.mjs"
+  }
+}

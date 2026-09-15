@@ -1,0 +1,9 @@
+# node_modules 里只有指向 DSH 检出的 junction，不作为依赖树提交。
+node_modules/
+
+# install.mjs 给 preset 打的备份。
+*.bak
+
+# 本地实验/临时目录。
+.testlab/
+.DS_Store
