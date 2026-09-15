@@ -398,7 +398,7 @@ check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length ==
   const summary = String(noticeAt()?.data?.source?.summary)
   check('the notice reports the hot-synced trigger line', summary.includes('触发线 ×0.5'), summary)
   check('a hot-synced session is no longer called stale',
-    !String(noticeAt()?.data?.content?.[0]?.text).includes('preset 文件里现在是'), summary)
+    !String(noticeAt()?.data?.content?.[0]?.text).includes('预设文件里现在是'), summary)
 
   // 有按模型覆盖时，同步的是**命中那条**（引擎的 resolveTargetPolicy 也这么选）。
   surface.requestHeader = () => ({ config: { provider: 'p', model: 'm' } })

@@ -41,9 +41,9 @@ export const SETTINGS_NAMESPACE = 'compact-agents'
 export const SETTINGS_FIELDS = Object.freeze({
   notice: '"是否在对话区播报压缩进度" —— 属于本插件，改完立即生效',
   maxAutoContinues: '"被输出上限截断时自动续写几次" —— 属于本插件，改完立即生效',
-  thresholdRatio: '"压缩触发阈值比例"(0.35 = 350K tokens 触发) —— 写进 preset，新会话生效',
-  retainRatio: '"压缩后保留比例" —— 写进 preset，新会话生效',
-  bootstrapMaxTokens: '"受控阶段的请求输出预算" —— 写进 preset，新会话生效',
+  thresholdRatio: '"压缩触发阈值比例"(0.35 = 窗口 100 万 tokens 时约 35 万处触发) —— 写进预设，并热同步给运行中的会话',
+  retainRatio: '"压缩后保留比例" —— 写进预设，并热同步给运行中的会话',
+  bootstrapMaxTokens: '"受控阶段的请求输出预算" —— 写进预设，新会话生效',
 })
 
 /** preset 参数分别在哪个 row 的 `config` 块里。 */

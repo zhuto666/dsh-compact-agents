@@ -430,10 +430,10 @@ function thresholdSuffix(state) {
   return state === null ? '' : ` · 触发线 ×${state.mounted}`
 }
 
-/** "preset 已改、热同步又进不去"那句提醒；不需要提醒时为空串。 */
+/** "预设已改、热同步又进不去"那句提醒；不需要提醒时为空串。 */
 function staleLine(state) {
   if (state === null || !state.stale) return ''
-  return `⚠️ preset 文件里现在是 ×${state.current}，本会话这个实例仍按 ×${state.mounted}（热同步没成功）：`
+  return `⚠️ 预设文件里现在是 ×${state.current}，本会话这个实例仍按 ×${state.mounted}（热同步没成功）：`
     + '新开一条对话才会用上新值。\n'
 }
 
@@ -575,7 +575,7 @@ function continueFor(ctx, session, event, max, noticeEnabled) {
         session,
         `连续 ${max} 次被输出上限截断，已停止自动续写`,
         `⚠️ 连续 ${max} 轮都因输出 token 上限被截断，已停止自动续写，避免继续消耗。\n`
-        + '请手动发送"继续"，或调大输出预算（preset 的 `bootstrapMaxTokens`、或模型的 maxTokens）。\n'
+        + '请手动发送"继续"，或调大输出预算（预设里的 `bootstrapMaxTokens`，或模型的 maxTokens）。\n'
         + '这是一条状态提示，不需要回应。',
       )
     }
