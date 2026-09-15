@@ -8,7 +8,7 @@
 
 [![version](https://img.shields.io/badge/version-0.4.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.4.0**：所有压缩相关参数搬进「设置」界面。压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数 —— 五项都能在 **设置 → 插件 → 可配置** 里改，不用再编辑 preset 的 YAML；顺带补上「被输出上限截断时自动续写」，让对话不再停在"已达到输出 token 上限"。详见[设计说明](docs/design.md)。
+**v0.4.0**：所有压缩相关参数搬进「设置」界面。压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数 —— 五项都能在 **设置 → 插件** 里改，不用再编辑 preset 的 YAML；顺带补上「被输出上限截断时自动续写」，让对话不再停在"已达到输出 token 上限"。详见[设计说明](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -35,7 +35,7 @@
 | 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
 | **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待 |
 | **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
-| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在「设置 → 插件 → 可配置」里提供卡片：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
+| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在「设置 → 插件」里提供卡片：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
 
 ## 为什么需要它
 
@@ -74,7 +74,7 @@ node scripts/install.mjs               # 确认后执行(profile 默认 web，�
 
 3. **把本插件登记进宿主组成**(浏览器 half、设置页那张卡片靠它)：在 `<DSH_HOME>/profiles/<profile>/node_modules/` 下建一个指向本仓库的 `dsh-compact-agents` 联接，并把 `dsh-compact-agents` 加进该 profile `package.json` 的 `dsh.profile.bundles` —— 宿主 Loader 于是多出一行 `compact-agents-client-host`(由本包的 `dsh.bundle.patch` → `cordis.patch.yml` 注入，入口 `client-host.js`)。profile 用 `--profile <name>` 指定，默认 `web`；改这个 `package.json` 前会留一份 `<package.json>.bak-compact-agents`。
 
-**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后「设置 → 插件 → 可配置」里才会出现那张卡片。之后只改 preset 里的参数就不必重启(见「生效」)。
+**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后「设置 → 插件」里才会出现那张卡片。之后只改 preset 里的参数就不必重启(见「生效」)。
 
 自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
 
@@ -256,7 +256,14 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ### 在「设置」里改这些参数
 
-打开 **设置 → 插件 → 可配置**，会看到一张「压缩与自动续写」卡片：
+打开 **设置 → 插件**，会看到一张「压缩与自动续写」卡片：
+
+![DSH 设置 → 插件 页里的「压缩与自动续写」卡片：编号 1 是入口，2 是卡片标题，3 是立即生效的两个字段，4 是新建会话生效的三个字段，5 是底部的放弃修改与保存](docs/images/settings-card-annotated.png)
+
+> 这张卡片是**纯参数卡片**：本插件在界面上**没有自己的按钮** —— 压缩与自动续写都是**自动发生**的，
+> 卡片上的「重置」只是设置框架自带的还原入口，不会触发压缩。
+> DSH 里唯一的手动压缩入口是**自带**的人机命令 `/compact`（不是本插件）；本插件提供的是**模型侧**工具
+> `compact_agents`，由模型调用，不是给人点的。
 
 | 字段 | 含义 | 生效时机 |
 |---|---|---|
@@ -268,7 +275,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 卡片上还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
 
-卡片本身长什么样，目前以文字描述为主（上面的字段表就是它的全部字段）；界面截图见 [docs/images](docs/images/README.md)——该目录写清了计划中的两张截图叫什么名字、怎么截、截好后怎么接进本文。
+卡片本身长什么样，见上面那张标注图；图里的编号与右侧图例一一对应。[docs/images](docs/images/README.md) 记录了这批图的来源与做法（真实界面截图 + 标注，不含任何个人信息），将来若要补别的截图，命名与插入位置也在那里写清。
 
 卡片能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是设置页里既没有命名空间也没有卡片、且毫无报错。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md)）。
 
@@ -478,7 +485,7 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
   - 新增**设置面**：宿主侧注册 settings 命名空间 `compact-agents`（模式与官方一致 ——
     slot 契约原话是 "Keying on the namespace is what lets a plugin distributed outside this
     repository contribute a card"），浏览器 half `lib/client.js` 在 `settings.plugin.item`
-    槽里注册同一命名空间的卡片，于是「设置 → 插件 → 可配置」里多出一张「压缩与自动续写」；
+    槽里注册同一命名空间的卡片，于是「设置 → 插件」里多出一张「压缩与自动续写」；
   - 五项可改：压缩触发阈值比例、压缩后保留比例、受控阶段输出预算、压缩进度提示、自动续写次数。
     前三项属于 preset 里的其它插件，所以**由本插件写进 preset 文件**（写前备份 + 原子替换 +
     只改目标行，注释与排版保留），新建会话时自动开新一代；后两项是本插件自己的，**立即生效**；

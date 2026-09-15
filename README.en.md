@@ -72,7 +72,7 @@ The script does the following, and is **idempotent**:
 
 3. **Registers this package in the host composition** (the browser half — the Settings card — relies on it): it creates a `dsh-compact-agents` junction under `<DSH_HOME>/profiles/<profile>/node_modules/` pointing at this repository, and adds `dsh-compact-agents` to that profile's `dsh.profile.bundles` in `package.json` — so the host Loader gains a `compact-agents-client-host` row (injected by this package's `dsh.bundle.patch` → `cordis.patch.yml`, entry `client-host.js`). Pick the profile with `--profile <name>`, default `web`; a `<package.json>.bak-compact-agents` copy is written first.
 
-**Restart `dsh` once after installing**: the host composition changed (the profile gained a bundle), and only after that restart does the card appear under **Settings → Plugins → Configurable**. Afterwards, changing only preset parameters needs no restart (see "Activation").
+**Restart `dsh` once after installing**: the host composition changed (the profile gained a bundle), and only after that restart does the card appear under **Settings → Plugins**. Afterwards, changing only preset parameters needs no restart (see "Activation").
 
 It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly. A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
 
@@ -260,7 +260,16 @@ plugin **sends "继续" on the user's behalf** so the conversation keeps going i
 
 ### Editing these parameters in Settings
 
-Open **Settings → Plugins → Configurable** and you will find a `Compaction & auto-continue` card:
+Open **Settings → Plugins** and you will find a `Compaction & auto-continue` card:
+
+![The `Compaction & auto-continue` card on the DSH Settings → Plugins page: 1 is the entry point, 2 is the card title, 3 is the two fields that take effect immediately, 4 is the three fields that apply to new sessions, 5 is Discard changes / Save at the bottom](docs/images/settings-card-annotated.png)
+
+> This card is a **pure parameter card**: the plugin has **no buttons of its own** in the UI — compaction and
+> auto-continue both happen **automatically**. The `Reset` next to a field is just the Settings framework's own
+> restore affordance and never triggers a compaction.
+> The only manual compaction entry point in DSH is the **built-in** human command `/compact` (not this plugin);
+> what this plugin provides is the **model-side** tool `compact_agents`, which the model calls — it is not
+> something a human clicks.
 
 | Field | Meaning | Takes effect |
 |---|---|---|
@@ -272,7 +281,7 @@ Open **Settings → Plugins → Configurable** and you will find a `Compaction &
 
 The card also marks the fields **you have overridden**, each with its own `Reset`.
 
-What the card itself looks like is described in prose for now (the table above is its complete field list); for UI screenshots see [docs/images](docs/images/README.md) — that page records the exact filenames of the two planned screenshots, how to capture them, and how to link them into this document.
+What the card looks like is shown in the annotated screenshot above; the numbers in the image match the legend on its right. [docs/images](docs/images/README.md) records where these images come from and how they are made (real UI captures plus annotations, containing no personal information), along with the naming and placement rules for any future screenshot.
 
 The card can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that Settings shows neither the namespace nor the card — with no error at all. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md)).
 
@@ -497,8 +506,8 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
   - New **Settings surface**: the host half registers the `compact-agents` settings namespace, and
     the browser half (`lib/client.js`) registers a card under the same key in the
     `settings.plugin.item` slot — official slot documentation: *"Keying on the namespace is what lets
-    a plugin distributed outside this repository contribute a card"*. **Settings → Plugins →
-    Configurable** therefore gains a `Compaction & auto-continue` card;
+    a plugin distributed outside this repository contribute a card"*. **Settings → Plugins**
+    therefore gains a `Compaction & auto-continue` card;
   - Five editable fields: compaction trigger ratio, retained ratio, controlled-phase output budget,
     compaction notices, auto-continue budget. The first three belong to other preset plugins, so this
     plugin **writes the preset files** (backup + atomic replace + only the target line changes, so
