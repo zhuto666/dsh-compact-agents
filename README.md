@@ -287,6 +287,7 @@ dsh-compact-agents
 │   ├── install.mjs              # 一键安装/修复:junction + preset 行(幂等,带 .bak)
 │   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction
 │   ├── validate-presets.mjs     # 校验挂载行/阈值/路径
+│   ├── inspect-presets.mjs      # 只读自检:真实 preset 里读到的生效值是多少
 │   ├── settings-test.mjs        # 设置面测试(真 schemastery + preset 文本手术)
 │   ├── client-test.mjs          # 浏览器 half 测试(假 __ModuleLoader__ + 桩 require)
 │   ├── integration-test.mjs     # 真机加载测试(真 Context + 真 ToolRuntime)

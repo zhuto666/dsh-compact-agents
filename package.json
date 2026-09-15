@@ -98,6 +98,7 @@
     "install-plugin": "node scripts/install.mjs",
     "uninstall-plugin": "node scripts/uninstall.mjs",
     "validate": "node scripts/validate-presets.mjs",
-    "test": "node scripts/selftest.mjs && node scripts/deferred-test.mjs && node scripts/settings-test.mjs && node scripts/integration-test.mjs && node scripts/client-test.mjs && node scripts/validate-presets.mjs"
+    "test": "node scripts/selftest.mjs && node scripts/deferred-test.mjs && node scripts/settings-test.mjs && node scripts/integration-test.mjs && node scripts/client-test.mjs && node scripts/validate-presets.mjs",
+    "inspect": "node scripts/inspect-presets.mjs"
   }
 }

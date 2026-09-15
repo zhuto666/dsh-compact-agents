@@ -152,11 +152,64 @@ function locateRowConfig(lines, rowId) {
 }
 
 /**
+ * 找出行内 YAML 注释的起始下标（`#` 且前面是空白，且不在引号内）。
+ * @param text - `key:` 之后的整段文本（值 + 可能存在的行内注释）。
+ * @returns 注释起始下标；没有注释时为 -1。
+ */
+function inlineCommentIndex(text) {
+  let quote = null
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    if (quote !== null) {
+      if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    // YAML 规定：`#` 只有在行首或前面是空白时才开始注释。
+    if (char === '#' && (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\t')) return i
+  }
+  return -1
+}
+
+/**
+ * 剥掉行内注释并去掉首尾空白，得到纯值。
+ *
+ * 真实 preset 里阈值就是带注释写的（`thresholdRatio: 0.2   # 1M 窗口 x 0.2 = 200K 触发压缩`），
+ * 不剥注释就会把注释当值解析成 NaN —— 读不到，写回时还会把用户的注释整段抹掉。
+ *
+ * @param text - `key:` 之后的整段文本。
+ * @returns 纯值文本。
+ */
+function scalarOf(text) {
+  return splitScalar(text).value
+}
+
+/**
+ * 把 `key:` 之后的文本切成「纯值」与「值之后的原样尾巴（对齐空白 + 行内注释）」。
+ *
+ * 尾巴必须原样留着：真实 preset 里阈值后面跟着一句"为什么是这个数"，
+ * 改配置时把它抹掉等于毁掉别人的注释。
+ *
+ * @param text - `key:` 之后的整段文本。
+ * @returns 纯值与尾巴。
+ */
+function splitScalar(text) {
+  const at = inlineCommentIndex(text)
+  const span = at === -1 ? text : text.slice(0, at)
+  const leading = span.length - span.trimStart().length
+  const value = span.trim()
+  return { value, tail: text.slice(leading + value.length) }
+}
+
+/**
  * 读一个 row 的 `config` 块里某个键的原始文本值。
  * @param lines - 文件按行切开的结果。
  * @param rowId - 目标 row 的 id。
  * @param key - 键名。
- * @returns 原始文本值（已去空白）；找不到时为 undefined。
+ * @returns 原始文本值（已去空白、已剥行内注释）；找不到时为 undefined。
  */
 export function readKeyInRow(lines, rowId, key) {
   const located = locateRowConfig(lines, rowId)
@@ -164,11 +217,11 @@ export function readKeyInRow(lines, rowId, key) {
   for (let i = located.configLine + 1; i < located.end; i += 1) {
     const line = lines[i]
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-    const match = /^(\s*)([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(line)
+    const match = /^(\s*)([A-Za-z0-9_-]+):(.*)$/.exec(line)
     if (match === null) continue
     // 缩进回到 config 同级说明这个块已经结束。
     if (match[1].length <= located.configIndent) break
-    if (match[2] === key) return match[3]
+    if (match[2] === key) return scalarOf(match[3])
   }
   return undefined
 }
@@ -176,7 +229,8 @@ export function readKeyInRow(lines, rowId, key) {
 /**
  * 就地改写一个 row 的 `config` 块里某个键；键不存在时插到 `config:` 的第一行。
  *
- * 只动这一行，其余文本（注释、缩进风格、`!!js` 表达式）原样保留。
+ * 只动这一行的**值**，其余文本原样保留 —— 包括行内注释后面的部分、缩进、以及文件其它行。
+ * 真实 preset 里阈值后面就跟着一句解释为什么是这个数，那是有价值的信息，不能被改配置抹掉。
  *
  * @param lines - 文件按行切开的结果（**就地修改**）。
  * @param rowId - 目标 row 的 id。
@@ -189,11 +243,13 @@ export function setKeyInRow(lines, rowId, key, value) {
   if (located === null) return false
   const childIndent = ' '.repeat(located.configIndent + 2)
   for (let i = located.configLine + 1; i < located.end; i += 1) {
-    const match = /^(\s*)([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(lines[i])
+    const match = /^(\s*)([A-Za-z0-9_-]+):(.*)$/.exec(lines[i])
     if (match === null) continue
     if (match[1].length <= located.configIndent) break
     if (match[2] !== key) continue
-    const next = `${match[1]}${key}: ${value}`
+    // 保留值后面的原始尾巴：对齐空白 + 行内注释；没有注释时是空串或行尾空白。
+    const { tail } = splitScalar(match[3])
+    const next = `${match[1]}${key}: ${value}${tail}`
     if (next === lines[i]) return false
     lines[i] = next
     return true

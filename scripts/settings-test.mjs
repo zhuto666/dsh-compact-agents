@@ -47,7 +47,7 @@ function check(name, ok, evidence = '') {
   console.log(`FAIL ${name}${evidence === '' ? '' : ` — ${evidence}`}`)
 }
 
-/** 与真实 preset 同构的夹具：嵌套 config 块、注释、`!!js` 风格的同级键。 */
+/** 与真实 preset 同构的夹具：嵌套 config 块、**行内注释**、独立注释行、兄弟 row。 */
 const FIXTURE = [
   '# 顶部注释',
   '- id: prompt',
@@ -59,8 +59,8 @@ const FIXTURE = [
   '    - id: compaction-basic',
   '      name: ./basics.mjs',
   '      config:',
-  '        thresholdRatio: 0.2',
-  '        retainRatio: 0.05',
+  '        thresholdRatio: 0.2   # 1M 窗口 x 0.2 = 200K 触发压缩',
+  '        retainRatio: 0.05     # 压缩后保留最近 5% 窗口',
   '        maxTokens: 8192',
   '    - id: compact-agents',
   "      name: 'E:/somewhere/index.js'",
@@ -89,11 +89,15 @@ check('a sibling row\'s key does not leak across the boundary',
 // 2. 写入：只改一行、缩进不变、注释与其它行原样保留。
 const edited = lines()
 check('rewrites an existing value', setKeyInRow(edited, 'compaction-basic', 'thresholdRatio', '0.35') === true)
+// 注意用 join 后再 includes：`Array.prototype.includes` 是**严格相等**，
+// 行里有行内注释时"整行等于纯值"就不成立了（第一版正是这样碰巧通过的）。
+const editedText = edited.join('\n')
 check('the rewritten line keeps its indentation',
-  edited.includes('        thresholdRatio: 0.35'), JSON.stringify(edited[10]))
+  editedText.includes('        thresholdRatio: 0.35'), JSON.stringify(edited[10]))
 check('a same-value write is a no-op', setKeyInRow(edited, 'compaction-basic', 'thresholdRatio', '0.35') === false)
-check('sibling keys are untouched', edited.includes('        retainRatio: 0.05') && edited.includes('        maxTokens: 8192'))
-check('comments survive the edit', edited.includes('    # 阈值：越低越早压'))
+check('sibling keys are untouched',
+  editedText.includes('        retainRatio: 0.05') && editedText.includes('        maxTokens: 8192'))
+check('comments survive the edit', editedText.includes('    # 阈值：越低越早压'))
 check('only the target line changed',
   edited.length === FIXTURE.split('\n').length && edited.filter((line, i) => line !== lines()[i]).length === 1,
   `${edited.filter((line, i) => line !== lines()[i]).length} line(s)`)
@@ -103,6 +107,21 @@ check('inserts a missing key into the config block',
   setKeyInRow(inserted, 'tool-bootstrap', 'brandNew', '7') === true && inserted.includes('    brandNew: 7'),
   JSON.stringify(inserted[Math.max(0, inserted.indexOf('    brandNew: 7'))]))
 check('an unknown row is left alone', setKeyInRow(lines(), 'no-such-row', 'x', '1') === false)
+
+// 行内注释：真实 preset 就是这么写的（`thresholdRatio: 0.2   # 1M 窗口 x 0.2 = 200K 触发压缩`）。
+// 第一版没覆盖这个形态，结果既读不到值（注释被当成值 → NaN），写回时还会把注释抹掉。
+const inline = lines()
+setKeyInRow(inline, 'compaction-basic', 'thresholdRatio', '0.35')
+check('a rewritten line keeps its inline comment verbatim',
+  inline[10] === '        thresholdRatio: 0.35   # 1M 窗口 x 0.2 = 200K 触发压缩', JSON.stringify(inline[10]))
+check('a value with an inline comment still reads as a plain scalar',
+  readKeyInRow(lines(), 'compaction-basic', 'retainRatio') === '0.05',
+  String(readKeyInRow(lines(), 'compaction-basic', 'retainRatio')))
+check('the whole file stays byte-identical except the edited value',
+  inline.join('\n').replace('0.35', '0.2') === FIXTURE)
+check('a # inside a quoted scalar is not treated as a comment',
+  readKeyInRow(['- id: x', '  config:', "    url: 'a # b'", '    n: 1   # 注释'], 'x', 'url') === "'a # b'",
+  String(readKeyInRow(['- id: x', '  config:', "    url: 'a # b'", '    n: 1   # 注释'], 'x', 'url')))
 
 // 3. 落盘：备份 + 原子替换 + 范围校验 + 幂等。
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'compact-agents-settings-'))
