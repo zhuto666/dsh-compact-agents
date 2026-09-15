@@ -32,7 +32,7 @@
 | 逐目标回报 | 返回值 `results[]` | 每个目标给出 `compacted` / `queued` / `noop` / `busy` / `error`，以及被遮蔽的节点数与估算 token 数 |
 | 越权保护 | — | 只有**顶层 agent** 能扫描他人；子代理只能 `scope: "self"`，成员无法互压或压队长 |
 | 串行调度 | — | 注册为 fail-closed 的 `exclusive`，一次扫描不会和另一个可能压同一会话的调用并行；超时 30 分钟(排队部分不计入，它在 turn 之后跑) |
-| 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发，建议 0.3 ⇒ 300K 触发) |
+| 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
 
 ## 为什么需要它
 
@@ -101,7 +101,7 @@ node scripts/validate-presets.mjs
 ```
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
-  thresholdRatio = 0.3  retainRatio = 0.05
+  thresholdRatio = 0.2  retainRatio = 0.05
   compact-agents -> E:/dsh-compact-agents/index.js (存在)
 ALL OK (4 preset mounted)
 ```

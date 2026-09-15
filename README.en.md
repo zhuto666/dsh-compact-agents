@@ -32,7 +32,7 @@ Force compaction ignoring the automatic threshold · Covers **every live session
 | Per-target reporting | return value `results[]` | Each target gets `compacted` / `queued` / `noop` / `busy` / `error`, plus shadowed node count and estimated tokens |
 | Overreach protection | — | Only a **top-level** agent may sweep others; a sub-agent may only use `scope: "self"`, so members cannot compact each other or their captain |
 | Serial scheduling | — | Registered as fail-closed `exclusive`: one sweep never runs alongside another call that might compact the same session. Timeout 30 minutes (queued work runs after the turn and is not covered by it) |
-| Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; 0.3 ⇒ 300K is recommended) |
+| Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; 0.2–0.3, i.e. 200K–300K, is recommended) |
 
 ## Why it is needed
 
@@ -101,7 +101,7 @@ It reports the mount row's location per preset, whether the referenced file exis
 ```
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
-  thresholdRatio = 0.3  retainRatio = 0.05
+  thresholdRatio = 0.2  retainRatio = 0.05
   compact-agents -> E:/dsh-compact-agents/index.js (存在)
 ALL OK (4 preset mounted)
 ```
