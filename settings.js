@@ -41,7 +41,7 @@ export const SETTINGS_NAMESPACE = 'compact-agents'
 export const SETTINGS_FIELDS = Object.freeze({
   notice: '"是否在对话区播报压缩进度" —— 属于本插件，改完立即生效',
   maxAutoContinues: '"被输出上限截断时自动续写几次" —— 属于本插件，改完立即生效',
-  thresholdRatio: '"压缩触发阈值比例"(0.2 = 200K tokens 触发) —— 写进 preset，新会话生效',
+  thresholdRatio: '"压缩触发阈值比例"(0.35 = 350K tokens 触发) —— 写进 preset，新会话生效',
   retainRatio: '"压缩后保留比例" —— 写进 preset，新会话生效',
   bootstrapMaxTokens: '"受控阶段的请求输出预算" —— 写进 preset，新会话生效',
 })
@@ -441,7 +441,7 @@ async function doRegister(ctx, config) {
   const schema = z.object({
     notice: z.boolean().default(true),
     maxAutoContinues: z.number().step(1).min(0).max(10).default(2),
-    thresholdRatio: z.number().min(0.05).max(0.95).default(0.2),
+    thresholdRatio: z.number().min(0.05).max(0.95).default(0.35),
     retainRatio: z.number().min(0.01).max(0.5).default(0.05),
     bootstrapMaxTokens: z.number().step(1).min(1024).max(200000).default(16384),
   })

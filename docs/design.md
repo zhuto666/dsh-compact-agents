@@ -103,7 +103,7 @@ preset 里含注释与 `!!js` 表达式。用 YAML 反序列化再序列化会�
 
 - `compaction-basic` 在**每一步边界**检查 `totalTokens >= contextWindow × thresholdRatio`，达线即摘要并遮蔽旧表面节点，然后**继续该轮**；
 - 并在 `CONTEXT_WINDOW_EXCEEDED` 时强制压缩后重试(`maxOverflowRetries` 默认 1)；
-- 触发线 = `contextWindow × thresholdRatio`，判定是 `measurement.totalTokens < spec.thresholdTokens` 就直接返回、否则压缩(`packages/compaction/compaction-basic/src/index.ts:305`)，即**达到阈值就压**。例如 1M 窗口 × 0.2 = **200K tokens** 触发(× 0.3 = 300K)；`retainRatio: 0.05` 保留最近 5%(50K)原文。
+- 触发线 = `contextWindow × thresholdRatio`，判定是 `measurement.totalTokens < spec.thresholdTokens` 就直接返回、否则压缩(`packages/compaction/compaction-basic/src/index.ts:305`)，即**达到阈值就压**。例如 1M 窗口 × 0.35 = **350K tokens** 触发(× 0.3 = 300K)；`retainRatio: 0.05` 保留最近 5%(50K)原文。
 - DSH 默认 `thresholdRatio` 是 **0.8**(1M 窗口 ⇒ 800K)，实际等于"几乎永不触发"；安装脚本在校验输出里报告这个值，便于确认。
 
 ## 6. 压缩提示：为什么只能这么做
@@ -323,8 +323,10 @@ preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见
 
 > ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路。第一版没有把 preset
 > 读写指向临时夹具，于是这个"验证"脚本**真的改写了用户的 preset** —— 把 `thresholdRatio` 写成了 `0.42`。
-> 现在它在最前面调用 `setPresetFilesForTest([临时夹具])`，并在结尾加了一条守卫断言：**真实 preset 文件仍是 0.2**，
-> 任何一次跑测试把这个值改掉都会立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。
+> 现在它在最前面调用 `setPresetFilesForTest([临时夹具])`，开头还会拍下真实 preset 的**全文快照**、结尾逐字节比对：
+> 只要有一个字被改动就立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。
+> 判据刻意**不是**"阈值必须是某个数字" —— `thresholdRatio` 本来就是给人调的旋钮，硬编码期望值会把
+> 「用户调过参」（本机四份 preset 都是 `0.5`）误报成「测试污染了配置」，让这条防线恒失败。
 > 凡是要写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
 
 ## 9. 压缩参数的机制与调参取舍
@@ -334,11 +336,11 @@ preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见
 
 ### 9.1 一次压缩的完整链路（示意）
 
-以 1M 窗口（≈100 万 tokens）、`thresholdRatio: 0.2`、`retainRatio: 0.05`、`bootstrapMaxTokens: 16384` 为例：
+以 1M 窗口（≈100 万 tokens）、`thresholdRatio: 0.35`、`retainRatio: 0.05`、`bootstrapMaxTokens: 16384` 为例：
 
 ```
-压之前   系统提示 1 万 + 历史 19 万 = 20 万
-         └─ totalTokens ≥ 窗口 × 0.2 → 达线，进入压缩
+压之前   系统提示 1 万 + 历史 34 万 = 35 万
+         └─ totalTokens ≥ 窗口 × 0.35 → 达线，进入压缩
 
 压缩中   summarizeCompaction(...) 真实调用一次摘要模型
          把"最近 5 万"以外的表面节点【遮蔽】(mask) 掉，并换成摘要
@@ -359,7 +361,7 @@ preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见
 
 ```mermaid
 flowchart TD
-    A["压缩前：系统提示 1 万 + 历史 19 万<br/>≈ 20 万 tokens"] --> B["撞到 thresholdRatio 0.2 的触发线<br/>（1M 窗口 × 0.2 = 20 万）"]
+    A["压缩前：系统提示 1 万 + 历史 34 万<br/>≈ 35 万 tokens"] --> B["撞到 thresholdRatio 0.35 的触发线<br/>（1M 窗口 × 0.35 = 35 万）"]
     B --> C["压缩：把「最近 5 万」以外的部分<br/>遮蔽成一段摘要（不删除，只移出发送内容）"]
     C --> D["压缩后：系统提示 1 万 + 摘要 0.3 万 + 最近原文 5 万<br/>≈ 6.3 万 tokens"]
     D --> E["「最近 5 万」= retainRatio 0.05 × 1M 窗口"]

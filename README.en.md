@@ -32,7 +32,7 @@ Force compaction ignoring the automatic threshold · Covers **every live session
 | Per-target reporting | return value `results[]` | Each target gets `compacted` / `queued` / `noop` / `busy` / `error`, plus shadowed node count and estimated tokens |
 | Overreach protection | — | Only a **top-level** agent may sweep others; a sub-agent may only use `scope: "self"`, so members cannot compact each other or their captain |
 | Serial scheduling | — | Registered as fail-closed `exclusive`: one sweep never runs alongside another call that might compact the same session. Timeout 30 minutes (queued work runs after the turn and is not covered by it) |
-| Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; 0.2–0.3, i.e. 200K–300K, is recommended) |
+| Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; the default is 0.35, i.e. 350K) |
 | **Compaction is visible in the conversation** | on by default; `notice: false` turns it off | Subscribes to `session/event`: the moment `compaction/start` lands, one plugin-sourced `user/message` is appended to the surface tail, and the client renders it as a collapsed "Context injection · dsh-compact-agents" row — *Compacting context… (currently 213,400 tokens)* while running, *Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed* when done. `compaction/start` is written **before** the summarization model call, so the notice covers exactly the wait that used to look frozen |
 
 ## Why it is needed
@@ -141,7 +141,7 @@ It reports the mount row's location per preset, whether the referenced file exis
 ```
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
-  thresholdRatio = 0.2  retainRatio = 0.05
+  thresholdRatio = 0.35  retainRatio = 0.05
   compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (exists)
 ALL OK (4 preset mounted)
 ```
@@ -273,7 +273,7 @@ Open **Settings → Plugins** and you will find a `Compaction & auto-continue` c
 
 | Field | Meaning | Takes effect |
 |---|---|---|
-| Compaction trigger ratio | `0.2` = compact once the context reaches 200K | **New sessions** |
+| Compaction trigger ratio | `0.35` = compact once the context reaches 350K | **New sessions** |
 | Retained ratio | how much recent history survives a compaction | **New sessions** |
 | Controlled-phase output budget | the per-request output budget during the `controlled` phase, re-entered after every compaction | **New sessions** |
 | Compaction notices | whether to announce *compacting context… / compaction done* in the conversation | Immediately |
@@ -298,11 +298,11 @@ The table above only says *what a field means*. This section says **what the par
 what happens when you turn it up or down**. For the design rationale behind it, see
 [design notes §9](docs/design.md).
 
-First, what one compaction looks like end to end (1M window ≈ 1,000,000 tokens, preset using `0.2` / `0.05`):
+First, what one compaction looks like end to end (1M window ≈ 1,000,000 tokens, preset using `0.35` / `0.05`):
 
 ```
-Before   system prompt 10K + history 190K = 200K
-         └─ hits the thresholdRatio 0.2 trigger line → compaction starts
+Before   system prompt 10K + history 340K = 350K
+         └─ hits the thresholdRatio 0.35 trigger line → compaction starts
 
 During   everything outside "the most recent 50K" is 【masked】
          └─ not deleted but removed from what is sent, and replaced by a summary;
@@ -324,7 +324,7 @@ Drawn as a chart, the same chain is one compaction end to end (the numbers match
 
 ```mermaid
 flowchart TD
-    A["Before: system prompt 10K + history 190K<br/>≈ 200K tokens"] --> B["Hits the thresholdRatio 0.2 trigger line<br/>(1M window × 0.2 = 200K)"]
+    A["Before: system prompt 10K + history 340K<br/>≈ 350K tokens"] --> B["Hits the thresholdRatio 0.35 trigger line<br/>(1M window × 0.35 = 350K)"]
     B --> C["Compaction: everything outside “the most recent 50K”<br/>is masked into one summary (not deleted, only removed from what is sent)"]
     C --> D["After: system prompt 10K + summary 3K + recent verbatim 50K<br/>≈ 63K tokens"]
     D --> E["“the most recent 50K” = retainRatio 0.05 × 1M window"]
@@ -488,7 +488,7 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 
 `compose-test.mjs` instead uses the **real `FileSettingsProvider` from the checkout** (writing to a temp file) plus a replication of the preset's `isolate` semantics, to prove the settings namespace also registers under the real service and a real isolated realm; it also deliberately **mounts the host-composition row before the `settings` service exists**, proving that the `ctx.inject` wait path really completes registration once the service arrives.
 
-> ⚠️ **Test-isolation lesson**: `compose-test.mjs` walks the real `update → watch → write-back` chain, so it must first point preset reads/writes at a **temp fixture** with `setPresetFilesForTest()` — the first version skipped that step and the "verification" script **actually rewrote the user's preset** (it wrote `thresholdRatio` as `0.42`). It now ends with a guard assertion: **the real preset file is still 0.2**, so any test run that changes it fails immediately (`npm test` runs it; `node scripts/compose-test.mjs` also works standalone). Any test that writes to disk must point its fixture at a temp file explicitly — never rely on "I assumed it would not write".
+> ⚠️ **Test-isolation lesson**: `compose-test.mjs` walks the real `update → watch → write-back` chain, so it must first point preset reads/writes at a **temp fixture** with `setPresetFilesForTest()` — the first version skipped that step and the "verification" script **actually rewrote the user's preset** (it wrote `thresholdRatio` as `0.42`). It now snapshots the real presets **byte for byte** at the start of the run and compares at the end, so a single changed character fails the run immediately (`npm test` runs it; `node scripts/compose-test.mjs` also works standalone). The check is deliberately **not** "the ratio must equal some number": `thresholdRatio` is a knob users are told to tune, and hard-coding an expected value turns "the user tuned it" into a false "the test polluted the config". Any test that writes to disk must point its fixture at a temp file explicitly — never rely on "I assumed it would not write".
 
 ## Known limitations
 
@@ -501,6 +501,8 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
+
+- **v0.6.0** — the default compaction trigger ratio moves from `0.2` (200K) to `0.35` (350K): the old default compacted early enough to summarize space that had not been used yet, while `0.35` means "compact when the window is nearly full". Also, the real-preset guard in `compose-test.mjs` no longer hard-codes "`thresholdRatio` must be 0.2" but compares against a byte-for-byte snapshot taken at startup, fixing a false positive once a user tuned the ratio to anything else.
 
 - **v0.4.0** — every tuning knob moves into Settings:
   - New **Settings surface**: the host half registers the `compact-agents` settings namespace, and

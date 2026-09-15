@@ -32,7 +32,7 @@
 | 逐目标回报 | 返回值 `results[]` | 每个目标给出 `compacted` / `queued` / `noop` / `busy` / `error`，以及被遮蔽的节点数与估算 token 数 |
 | 越权保护 | — | 只有**顶层 agent** 能扫描他人；子代理只能 `scope: "self"`，成员无法互压或压队长 |
 | 串行调度 | — | 注册为 fail-closed 的 `exclusive`，一次扫描不会和另一个可能压同一会话的调用并行；超时 30 分钟(排队部分不计入，它在 turn 之后跑) |
-| 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
+| 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；默认 0.35，即 350K 触发) |
 | **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待 |
 | **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
 | **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在「设置 → 插件」里提供卡片：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
@@ -143,7 +143,7 @@ node scripts/validate-presets.mjs
 ```
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
-  thresholdRatio = 0.2  retainRatio = 0.05
+  thresholdRatio = 0.35  retainRatio = 0.05
   compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (存在)
 ALL OK (4 preset mounted)
 ```
@@ -267,7 +267,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 | 字段 | 含义 | 生效时机 |
 |---|---|---|
-| 压缩触发阈值比例 | `0.2` = 上下文用到 200K 就自动压缩 | **新建会话生效** |
+| 压缩触发阈值比例 | `0.35` = 上下文用到 350K 就自动压缩 | **新建会话生效** |
 | 压缩后保留比例 | 压缩后按该比例留下最近的历史 | **新建会话生效** |
 | 受控阶段输出预算 | 每次压缩后会重新进入的"受控阶段"里，单个请求的输出预算 | **新建会话生效** |
 | 压缩进度提示 | 是否在对话区播报「正在压缩上下文…／压缩完成」 | 立即生效 |
@@ -295,11 +295,11 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 上面那张表只说了"字段是什么意思"。这一节说清**这个参数到底在管什么、往哪边调会怎样**。
 机制层面的理由（为什么这样设计）见[设计说明 §9](docs/design.md)。
 
-先看一次压缩从头到尾发生了什么（以 1M 窗口 ≈ 100 万 tokens、preset 用 `0.2` / `0.05` 为例）：
+先看一次压缩从头到尾发生了什么（以 1M 窗口 ≈ 100 万 tokens、preset 用 `0.35` / `0.05` 为例）：
 
 ```
-压之前   系统提示 1 万 + 历史 19 万 = 20 万
-         └─ 撞到 thresholdRatio 0.2 的触发线 → 开始压缩
+压之前   系统提示 1 万 + 历史 34 万 = 35 万
+         └─ 撞到 thresholdRatio 0.35 的触发线 → 开始压缩
 
 压缩中   把"最近 5 万"以外的部分【遮蔽】掉（不是删除，是移出发送内容）
          └─ 换成一段摘要；压缩提示播报里报的"遮蔽节点数"就是它
@@ -317,7 +317,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ```mermaid
 flowchart TD
-    A["压缩前：系统提示 1 万 + 历史 19 万<br/>≈ 20 万 tokens"] --> B["撞到 thresholdRatio 0.2 的触发线<br/>（1M 窗口 × 0.2 = 20 万）"]
+    A["压缩前：系统提示 1 万 + 历史 34 万<br/>≈ 35 万 tokens"] --> B["撞到 thresholdRatio 0.35 的触发线<br/>（1M 窗口 × 0.35 = 35 万）"]
     B --> C["压缩：把「最近 5 万」以外的部分<br/>遮蔽成一段摘要（不删除，只移出发送内容）"]
     C --> D["压缩后：系统提示 1 万 + 摘要 0.3 万 + 最近原文 5 万<br/>≈ 6.3 万 tokens"]
     D --> E["「最近 5 万」= retainRatio 0.05 × 1M 窗口"]
@@ -467,7 +467,7 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 
 `compose-test.mjs` 则用**检出里真实的 `FileSettingsProvider`**(写到临时文件)与复刻的 preset `isolate` 语义，验证设置命名空间在真实服务 + 真实隔离作用域下也注册得上；它还会刻意**先挂宿主组成那一行、后挂 settings 服务**，证明 `ctx.inject` 的等待路径真的在服务到场后完成注册。
 
-> ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路，必须先用 `setPresetFilesForTest()` 把 preset 读写指向**临时夹具** —— 第一版漏了这一步，于是这个"验证"脚本**真的改写了用户的 preset**（把 `thresholdRatio` 写成了 0.42）。现在脚本结尾有一条守卫断言：**真实 preset 文件仍是 0.2**，一旦被改写立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。凡是会写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
+> ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路，必须先用 `setPresetFilesForTest()` 把 preset 读写指向**临时夹具** —— 第一版漏了这一步，于是这个"验证"脚本**真的改写了用户的 preset**（把 `thresholdRatio` 写成了 0.42）。现在脚本开头会拍下真实 preset 的**全文快照**、结尾逐字节比对：只要有一个字被改动就立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。判据刻意**不是**"阈值必须是某个数字"——`thresholdRatio` 本来就是给人调的旋钮，硬编码期望值会把"用户调过参"误报成"测试污染了配置"。凡是会写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
 
 ## 已知限制
 
@@ -480,6 +480,8 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
 
 ## 更新历史
+
+- **v0.6.0** — 压缩触发阈值默认值由 `0.2`(200K) 调成 `0.35`(350K)：默认值偏小会让压缩来得太早、把还没用上的空间提前总结掉，`0.35` 更接近"快满了再压"。同时把 `compose-test.mjs` 的真实 preset 守卫从"硬编码 `thresholdRatio` 必须是 0.2"改成"与开头全文快照逐字节一致"，修掉用户把阈值调成别的值后守卫恒失败的假阳性。
 
 - **v0.4.0** — 参数搬进「设置」界面：
   - 新增**设置面**：宿主侧注册 settings 命名空间 `compact-agents`（模式与官方一致 ——

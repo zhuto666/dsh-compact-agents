@@ -20,11 +20,24 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { resolveDshCheckout } from './lib/presets.mjs'
+import { discoverPresets, resolveDshCheckout } from './lib/presets.mjs'
 import { resetSettingsStateForTest, setPresetFilesForTest, SETTINGS_NAMESPACE } from '../settings.js'
 import * as plugin from '../index.js'
 
 let failed = 0
+
+/**
+ * 真实 preset 的内容快照：脚本一开始就拍下，结尾逐字节比对。
+ *
+ * 为什么不能只看 `thresholdRatio === 0.2`：那是**用户可调的旋钮**（README 就是教人调它的），
+ * 用户把它调成 0.5 是正常状态。硬编码期望值会把"用户调过参"误报成"测试污染了配置" ——
+ * 本机四个 preset 全是 0.5，于是守卫恒失败，等于把这条防线废掉。逐字节相同才是要守的线。
+ */
+const realPresets = new Map(
+  discoverPresets()
+    .filter((file) => fs.existsSync(file))
+    .map((file) => [file, fs.readFileSync(file, 'utf8')]),
+)
 
 /**
  * 断言一行。
@@ -242,15 +255,12 @@ setPresetFilesForTest(null)
 }
 
 // 守卫：本脚本绝不改写真实 preset（第一版正是漏了这条，把 thresholdRatio 写成了 0.42）。
-const realPresets = (await import('./lib/presets.mjs')).discoverPresets()
-const polluted = realPresets.filter((file) => {
-  if (!fs.existsSync(file)) return false
-  const text = fs.readFileSync(file, 'utf8')
-  const row = /thresholdRatio:\s*([0-9.]+)/.exec(text)
-  return row !== null && Number(row[1]) !== 0.2
-})
-check('the real preset files are left untouched by this test', polluted.length === 0,
-  polluted.length === 0 ? `${realPresets.length} file(s) still at 0.2` : polluted.join(', '))
+// 判据是**与开头快照逐字节相同**，不是某个具体取值 —— 用户把阈值调成 0.5 属于正常状态。
+const changed = [...realPresets]
+  .filter(([file, before]) => !fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== before)
+  .map(([file]) => file)
+check('the real preset files are byte-identical (this test never writes them)', changed.length === 0,
+  changed.length === 0 ? `${realPresets.size} file(s) unchanged` : changed.join(', '))
 
 fs.rmSync(sandbox, { recursive: true, force: true })
 
