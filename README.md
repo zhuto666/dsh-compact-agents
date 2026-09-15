@@ -4,11 +4,11 @@
 
 **DeepSeek Harness 会话上下文强制压缩插件(模型可调用的 `compact_agents`)**
 
-强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · 纯主机侧插件、零网络、零持久化、无客户端 bundle
+强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在「设置」里直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.3.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.4.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.3.0**：压缩过程在对话区可见，被输出上限截断时自动续写。补上 DSH 缺失的"模型侧手动压缩"入口 —— `/compact` 只服务交互式 UI，headless 的子代理与团队成员没有命令面，队长也没有任何工具能替它们压缩；同时让**自动压缩与手动压缩都在会话里留下可见提示**("正在压缩上下文…"、"约 213,400 → 49,800 tokens")。详见[设计说明](docs/design.md)。
+**v0.4.0**：所有压缩相关参数搬进「设置」界面。压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数 —— 五项都能在 **设置 → 插件 → 可配置** 里改，不用再编辑 preset 的 YAML；顺带补上「被输出上限截断时自动续写」，让对话不再停在"已达到输出 token 上限"。详见[设计说明](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -35,6 +35,7 @@
 | 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
 | **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待 |
 | **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
+| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在「设置 → 插件 → 可配置」里提供卡片：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
 
 ## 为什么需要它
 
@@ -63,7 +64,7 @@ node scripts/install.mjs               # 确认后执行
 
 脚本只做两件事，且**幂等**：
 
-1. **建两个目录联接(junction)**，让插件能解析到 `@deepseek-ai/dsh-tools` 与 `@deepseek-ai/cordis`——本项目**刻意零依赖**(不装 node_modules)，Node 会把 junction 解析到真实路径，因此拿到的是和宿主**同一个模块实例**，没有双实例问题；
+1. **建三个目录联接(junction)**，让插件能解析到 `@deepseek-ai/dsh-tools`、`@deepseek-ai/cordis` 与 `@deepseek-ai/schemastery`——本项目**刻意零依赖**(不装 node_modules)，Node 会把 junction 解析到真实路径，因此拿到的是和宿主**同一个模块实例**，没有双实例问题；
 2. **往 preset 的 `compaction` 隔离组里追加一行挂载**：
 
 ```yaml
@@ -218,6 +219,31 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 > 若模型开着高推理，思考 token 与正文共享这份预算，很容易整份被思考吃光 → 正文 0 字被判截断。
 > 详见[设计说明 §7](docs/design.md)。
 
+### 在「设置」里改这些参数
+
+打开 **设置 → 插件 → 可配置**，会看到一张「压缩与自动续写」卡片：
+
+| 字段 | 含义 | 生效时机 |
+|---|---|---|
+| 压缩触发阈值比例 | `0.2` = 上下文用到 200K 就自动压缩 | **新建会话生效** |
+| 压缩后保留比例 | 压缩后按该比例留下最近的历史 | **新建会话生效** |
+| 受控阶段输出预算 | 每次压缩后会重新进入的"受控阶段"里，单个请求的输出预算 | **新建会话生效** |
+| 压缩进度提示 | 是否在对话区播报「正在压缩上下文…／压缩完成」 | 立即生效 |
+| 自动续写次数 | 被输出上限截断时最多自动发几次"继续"（0 = 关闭） | 立即生效 |
+
+卡片上还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
+
+设计要点（为什么分成两种生效时机）：
+
+- 前三个值**属于 preset 里的其它插件**（`compaction-basic` 的 `thresholdRatio`/`retainRatio`、
+  `tool-bootstrap` 的 `bootstrapMaxTokens`），插件没法替它们改运行时策略，所以改的是
+  **preset 文件本身**。preset 的挂载会记录文件 stamp，stamp 变了就给**之后新建的会话**开新一代
+  ——所以不用重启 DSH，但已经在跑的会话不受影响。写盘前会落一份 `<preset>.bak-compact-agents`
+  备份，并用临时文件 + rename 原子替换；只改目标那一行，preset 里的注释与排版原样保留。
+- 后两个值**是本插件自己的**，会话事件发生时才读，所以改完立即生效。
+
+> `settings: false` 可以整体关掉这个设置面（工具与提示不受影响）。
+
 ## 工作原理
 
 对每个目标调用 `ctx.compaction.compactNow(agent, signal)`，然后把结果翻译成报告行。
@@ -252,24 +278,30 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ```
 dsh-compact-agents
-├── index.js                     # 插件本体:注册 compact_agents 工具(唯一入口)
-├── package.json                 # ESM 包声明(main → index.js)
+├── index.js                     # 插件本体:注册 compact_agents 工具 + 会话监听(唯一入口)
+├── settings.js                  # 设置面:settings 命名空间 + preset 参数读写
+├── lib/client.js                # 浏览器 half:设置页里那张卡片(手写,无构建步骤)
+├── package.json                 # ESM 包声明(main → index.js;dsh.client → lib/client.js)
 ├── scripts/
-│   ├── lib/presets.mjs          # 三脚本共用:路径常量 + preset 发现(只有一处定义)
+│   ├── lib/presets.mjs          # 各脚本共用:路径常量 + preset 发现(只有一处定义)
 │   ├── install.mjs              # 一键安装/修复:junction + preset 行(幂等,带 .bak)
 │   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction
 │   ├── validate-presets.mjs     # 校验挂载行/阈值/路径
+│   ├── settings-test.mjs        # 设置面测试(真 schemastery + preset 文本手术)
+│   ├── client-test.mjs          # 浏览器 half 测试(假 __ModuleLoader__ + 桩 require)
 │   ├── integration-test.mjs     # 真机加载测试(真 Context + 真 ToolRuntime)
 │   ├── deferred-test.mjs        # 排队补压行为测试(假 ctx)
 │   └── selftest.mjs             # 模块与 defineTool 规格自检
 ├── docs/
 │   └── design.md                # 设计说明:契约出处、约束、踩过的坑、测试矩阵
 └── node_modules/@deepseek-ai/   # install.mjs 建的 junction(不进版本库)
-    ├── dsh-tools -> <dsh checkout>/packages/core/tools
-    └── cordis    -> <dsh checkout>/vendor/cordis
+    ├── dsh-tools    -> <dsh checkout>/packages/core/tools
+    ├── cordis       -> <dsh checkout>/vendor/cordis
+    └── schemastery  -> <dsh checkout>/vendor/schemastery
 ```
 
-插件只 import 一个东西：`defineTool`(来自 `@deepseek-ai/dsh-tools`)。`cordis` 的 junction 只有 `integration-test.mjs` 需要。
+插件本体只 import 两个东西：`defineTool`(来自 `@deepseek-ai/dsh-tools`)，以及**动态** import 的 `@deepseek-ai/schemastery`(用来声明设置的 schema)。
+后两个 junction 只有设置面与测试需要；**缺了 schemastery 只会少一个设置页，不会让插件挂掉**（动态 import 失败只记一条 warn）。
 
 **为什么 preset 行必须写绝对路径**：`agent-presets/src/specifier.ts` 的分类函数对绝对盘符路径走 `pathToFileURL`(注释写明"专为 Windows 盘符路径所必需")，变成 `file:` 行；而**裸包名在 preset 里是从 harness 解析的**，指向用户目录的包会解析失败。
 
@@ -297,6 +329,21 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
 
 ## 更新历史
+
+- **v0.4.0** — 参数搬进「设置」界面：
+  - 新增**设置面**：宿主侧注册 settings 命名空间 `compact-agents`（模式与官方一致 ——
+    slot 契约原话是 "Keying on the namespace is what lets a plugin distributed outside this
+    repository contribute a card"），浏览器 half `lib/client.js` 在 `settings.plugin.item`
+    槽里注册同一命名空间的卡片，于是「设置 → 插件 → 可配置」里多出一张「压缩与自动续写」；
+  - 五项可改：压缩触发阈值比例、压缩后保留比例、受控阶段输出预算、压缩进度提示、自动续写次数。
+    前三项属于 preset 里的其它插件，所以**由本插件写进 preset 文件**（写前备份 + 原子替换 +
+    只改目标行，注释与排版保留），新建会话时自动开新一代；后两项是本插件自己的，**立即生效**；
+  - 浏览器 half 是**手写的单文件 bundle**（DSH 的客户端模块系统就是惰性 CJS 表，不需要打包器），
+    只 require 种子模块 `react` 与 `@deepseek-ai/dsh-client-store`，因此本项目仍然零 npm 依赖；
+  - 新增两个测试：`settings-test.mjs`（真 schemastery + 真 cordis Context + preset 文本手术，
+    全程用临时文件，不碰真实配置）与 `client-test.mjs`（假 `__ModuleLoader__` + 桩 require，
+    真 React 渲染断言）；
+  - `install.mjs` 多建一个 `@deepseek-ai/schemastery` 联接（缺了只会少一个设置页，插件照常工作）。
 
 - **v0.3.0** — 被输出上限截断时自动续写：
   - 新增**自动续写**：一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"

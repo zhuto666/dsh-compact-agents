@@ -34,6 +34,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { liveConfig, registerSettings, resolveMaxAutoContinues } from './settings.js'
 
 export const name = 'dsh-compact-agents'
 export const inject = ['tools', 'compaction', 'agents']
@@ -62,24 +63,8 @@ const summaries = new Map()
 /** 每个会话连续自动续写的次数；一轮正常结束即清零。 */
 const autoContinues = new Map()
 
-/** `maxAutoContinues` 的默认值：连续截断时最多自动续写两次。 */
-const DEFAULT_MAX_AUTO_CONTINUES = 2
-
 /** 自动续写时替用户发出的那句话。 */
 const CONTINUE_TEXT = '继续'
-
-/**
- * 解析行配置里的自动续写次数上限。
- * @param config - 行配置；`maxAutoContinues: 0` 或 `false` 关闭自动续写。
- * @returns 0 表示关闭，否则为该会话允许的最大连续续写次数。
- */
-function resolveMaxAutoContinues(config) {
-  const raw = config?.maxAutoContinues
-  if (raw === false) return 0
-  if (raw === undefined) return DEFAULT_MAX_AUTO_CONTINUES
-  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return raw
-  return DEFAULT_MAX_AUTO_CONTINUES
-}
 
 /**
  * 千分位格式化 token 数。
@@ -258,10 +243,10 @@ function continueMessage() {
  * @param ctx - registrant context carrying the agent registry, logger, and token meter.
  * @param session - 事件所属会话。
  * @param event - 已追加的 `turn/end` 事件。
- * @param options - `maxAutoContinues` 次数上限与 `notice` 是否播报。
+ * @param max - 该会话允许的最大连续续写次数。
+ * @param noticeEnabled - 是否播报（设置优先，其次本挂载行配置）。
  */
-function continueFor(ctx, session, event, options) {
-  const max = options.maxAutoContinues
+function continueFor(ctx, session, event, max, noticeEnabled) {
   if (event.data?.reason?.kind !== 'max-tokens') {
     // 正常结束的一轮：续写额度归还。
     autoContinues.delete(session)
@@ -272,7 +257,7 @@ function continueFor(ctx, session, event, options) {
   const used = (autoContinues.get(session) ?? 0) + 1
   autoContinues.set(session, used)
   if (used > max) {
-    if (options.notice) {
+    if (noticeEnabled) {
       appendNotice(
         ctx,
         session,
@@ -293,7 +278,7 @@ function continueFor(ctx, session, event, options) {
       ctx.logger.warn(`compact-agents: auto-continue failed: ${message}`)
     }
   }, 0)
-  if (options.notice) {
+  if (noticeEnabled) {
     appendNotice(
       ctx,
       session,
@@ -310,21 +295,25 @@ function continueFor(ctx, session, event, options) {
  * `session/event` 是提交后同步派发的观察者feed；`compaction/start` 在摘要模型调用之前
  * 追加，所以这里能在"等待模型"那段开始时就提示，而不是等压缩结束。
  *
+ * 两个旋钮每次事件现算：设置界面改过就以设置为准（立即生效），没改过就用**本挂载**的
+ * 行配置 —— 一个进程里可能同时挂着好几个 preset，行配置各不相同，不能互相串。
+ *
  * @param ctx - registrant context carrying the session feed, agents, and logger.
- * @param options - `notice` 控制压缩提示，`maxAutoContinues` 控制自动续写次数上限。
+ * @param mount - 本挂载的行配置（作文层兜底）。
  */
-function registerSessionWatch(ctx, options) {
+function registerSessionWatch(ctx, mount) {
   if (typeof ctx.on !== 'function') return
-  if (!options.notice && options.maxAutoContinues === 0) return
   ctx.on('session/event', (session, event) => {
     const type = event?.type
     try {
-      if (options.notice
+      const notice = liveConfig.notice ?? mount.notice
+      const maxAutoContinues = liveConfig.maxAutoContinues ?? mount.maxAutoContinues
+      if (notice
         && (type === 'compaction/start' || type === 'compaction/summary' || type === 'compaction/end')) {
         noticeFor(ctx, session, event)
       }
-      if (options.maxAutoContinues > 0 && type === 'turn/end') {
-        continueFor(ctx, session, event, options)
+      if (maxAutoContinues > 0 && type === 'turn/end') {
+        continueFor(ctx, session, event, maxAutoContinues, notice)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -544,15 +533,23 @@ function render(value) {
 
 /**
  * Register the `compact_agents` tool, the in-conversation compaction notices,
- * and the auto-continue safety net.
- * @param ctx - registrant context carrying the tool, compaction, session feed, and agent services.
+ * the auto-continue safety net, and the Settings surface.
+ * @param ctx - registrant context carrying the tool, compaction, session feed, settings, and agent services.
  * @param config - optional row config; `notice: false` turns the notices off,
- *   `maxAutoContinues` (default 2, `0`/`false` off) bounds the automatic "继续" turns.
+ *   `maxAutoContinues` (default 2, `0`/`false` off) bounds the automatic "继续" turns,
+ *   `settings: false` turns the Settings namespace off. Both knobs are the composition
+ *   layer, so the Settings UI overrides them and — unlike the row config — applies live.
  */
 export function apply(ctx, config) {
-  registerSessionWatch(ctx, {
+  // 行配置进「本挂载的兜底层」；设置界面里改过的值(用户层)会在事件发生时盖过它。
+  const mount = {
     notice: config?.notice !== false,
     maxAutoContinues: resolveMaxAutoContinues(config),
+  }
+  registerSessionWatch(ctx, mount)
+  void registerSettings(ctx, config).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    ctx.logger.warn(`compact-agents: settings registration failed: ${message}`)
   })
   ctx.tools.register(defineTool({
     name: 'compact_agents',

@@ -216,3 +216,61 @@ ctx.on('session/event', (session, event) => {
 | **任一轮正常结束即清零** | 额度是"连续"次数：换了一个正常回答之后，下次再从 1 开始，不会长期耗尽 |
 | 找不到活 agent 就放弃 | 会话可能已经结束；自动续写只服务于还能跑的会话 |
 
+## 8. 设置面：把旋钮搬进「设置」界面
+
+目标：压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数，五项都能在
+**设置 → 插件 → 可配置** 里改，不必再编辑 preset 的 YAML。
+
+### 8.1 走官方正路，而不是自己画一个界面
+
+DSH 的设置页对插件命名空间是**泛型**的：`ConfigurablePluginsTab` 枚举
+`ctx.settingsScope.describe()` 里的命名空间，为每个命名空间渲染一个由插件自己提供的卡片
+（`renderSlot('settings.plugin.item', {}, { entryKey: ns })`）。slot 契约把站外插件这条路
+写得很明白：
+
+> Keying on the namespace is what lets a plugin distributed outside this repository contribute a
+> card: it registers its own settings namespace on the Host and its own card under that key in the
+> browser, and the tab pairs the two without ever learning what the namespace means.
+
+于是：宿主侧 `settings.register('compact-agents', schema, { base, applies })`，浏览器侧
+`ctx.slots.register({ name: 'settings.plugin.item', key: 'compact-agents', inject }, Card)`。
+**没有通用兜底界面** —— 插件不提供卡片，那个命名空间在设置页里就不出现，所以卡片是必需品。
+
+| 决策 | 理由 |
+|---|---|
+| 宿主注册命名空间 + 自己写浏览器 half | 这是官方支持的站外插件形态；自己去改 DSH 的设置页属于改宿主 |
+| 浏览器 half 手写成单文件 bundle，不引打包器 | DSH 的客户端模块系统本身就是一张惰性 CJS 表（`window.__ModuleLoader__.load({ id, factory })`），产物形态可以直接照抄。项目"零依赖、离线可用"的原则因此不需要为界面破例 |
+| 只 require 种子模块 `react` 与 `@deepseek-ai/dsh-client-store` | 种子模块由 shell 直接提供，不需要 `dsh.client.external`（没声明 external 却 require 非种子包会在启动时报错）。settings 通道走**服务** `ctx.settingsScope`，只在 `dsh.client.inject` 里声明包依赖边 |
+| 登记键写 `key:` 而不是 `entryKey:` | 产物 `ui-settings-plugins/lib/client.js` 里注册用的是 `key`；`entryKey` 是**渲染侧** `renderSlot` 的派发选项。两者不能混 |
+| **进程级只注册一次** | `SettingsProvider.register()` 对重复命名空间直接 `throw`，而注册挂在该 provider 的 fiber 上、不随调用者卸载。本插件挂在 preset 行上、每次换代都会重新 apply，所以必须用模块级缓存复用同一个 scope，否则换代时那一行会直接挂掉 |
+| 命名空间的 `base` 用 preset 文件里的**现值** | 设置页显示的就该是"真正生效的值"，而不是插件凭空给的默认值；三层优先级是「schema 默认 < 作文层（行配置 + preset 现值）< 用户层（界面）」 |
+| `applies: 'restart'` | 五项里三项要等新会话才生效，取保守声明；卡片上逐项写明真实时机 |
+
+### 8.2 两类值，两种生效机制
+
+前三个值**属于 preset 里的其它插件**（`compaction-basic` 的 `thresholdRatio`/`retainRatio`、
+`tool-bootstrap` 的 `bootstrapMaxTokens`）。插件改不了别人的运行时策略，所以改的是
+**preset 文件本身**：preset 的挂载会记录文件 stamp，stamp 变了就给**之后新建的会话**开新一代
+（`agent-presets` 的 mount 契约："Sessions already joined keep the generation they run on"）。
+不用重启 DSH，但已在运行的会话不受影响。
+
+后两个值是**本插件自己的**，会话事件发生时才读，所以改完立即生效。
+
+| 决策 | 理由 |
+|---|---|
+| 按行做文本手术，不反序列化再序列化 | preset 里有注释、`!!js` 表达式和排版；读进来再写出去等于把别人的配置文件重排一遍。只定位目标 row 的 `config` 块、只替换目标那一行 |
+| 写前备份 + 临时文件 rename | `<preset>.bak-compact-agents` 常驻一份"最近一次写前"的内容；rename 是原子的。设置面板改配置不该有把 preset 写坏的可能 |
+| 越界值直接拒绝 | 设置页与宿主 schema 两侧都校验，且宿主侧再挡一道范围，避免手改 settings.yaml 写出荒谬的阈值 |
+| **`liveConfig` 只存"用户层覆盖"**，`null` 表示没覆盖 | 这是踩出来的：本插件按 preset 行多处挂载，行配置各不相同，而命名空间是**进程级唯一**的。第一版把解析结果直接写进模块级 `liveConfig`，于是任一个 preset 写的 `notice: false` 会把**所有** preset 的提示一起关掉（集成测试当场抓到这个回归）。现在解析结果与 `base` 比对，相等就退回各挂载自己的行配置 |
+
+### 8.3 验证
+
+| 层 | 覆盖 |
+|---|---|
+| 文本手术 | 嵌套 `config` 块的定位、兄弟 row 不串键、注释与缩进保留、只改一行、键不存在时插入、同一值不重写 |
+| 落盘 | 备份内容、无残留临时文件、字节级"只有目标行变了"、越界拒绝、幂等 |
+| 注册 | 命名空间名、`applies`、`base` 携带行配置与 preset 现值、schema 真能解析、**二次挂载不重复注册**、变更后自身旋钮立即生效且 preset 参数落盘 |
+| 两端一致性 | 卡片里的字段集合必须**逐个等于**宿主 schema 的字段；两端的命名空间字符串必须一致。这个接口是刻意在两端各写一份的，没有守卫就会悄悄漂移 |
+| 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、注册进 `settings.plugin.item` 且 `key` 正确、真 React 渲染出五个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛 |
+
+

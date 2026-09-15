@@ -4,9 +4,9 @@
 
 **Plugin for DeepSeek Harness: force-compact session context from the model itself (`compact_agents`)**
 
-Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · Host-only plugin: no network, no persistence, no client bundle
+Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **Thresholds and friends are editable in Settings** · No network, no dependencies; the browser half is hand-written with no build step
 
-[![version](https://img.shields.io/badge/version-0.3.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.4.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 **v0.3.0**: compaction is visible in the conversation, and a turn truncated by the output cap continues itself. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
 
@@ -62,7 +62,7 @@ node scripts/install.mjs               # apply
 
 The script does exactly two things, and is **idempotent**:
 
-1. **Creates two directory junctions** so the plugin can resolve `@deepseek-ai/dsh-tools` and `@deepseek-ai/cordis` — this project is deliberately **dependency-free** (no `node_modules` install). Node resolves junctions to their real path, so the plugin gets the **same module instance** as the host, with no duplicate-instance hazard.
+1. **Creates three directory junctions** so the plugin can resolve `@deepseek-ai/dsh-tools`, `@deepseek-ai/cordis` and `@deepseek-ai/schemastery` — this project is deliberately **dependency-free** (no `node_modules` install). Node resolves junctions to their real path, so the plugin gets the **same module instance** as the host, with no duplicate-instance hazard.
 2. **Appends one mount row** to the `compaction` isolate group of each preset:
 
 ```yaml
@@ -223,6 +223,27 @@ plugin **sends "继续" on the user's behalf** so the conversation keeps going i
 > that budget and can consume all of it → zero visible output → the turn is reported as truncated. See
 > [design notes §7](docs/design.md).
 
+### Editing these parameters in Settings
+
+Open **Settings → Plugins → Configurable** and you will find a `Compaction & auto-continue` card:
+
+| Field | Meaning | Takes effect |
+|---|---|---|
+| Compaction trigger ratio | `0.2` = compact once the context reaches 200K | **New sessions** |
+| Retained ratio | how much recent history survives a compaction | **New sessions** |
+| Controlled-phase output budget | the per-request output budget during the `controlled` phase, re-entered after every compaction | **New sessions** |
+| Compaction notices | whether to announce *compacting context… / compaction done* in the conversation | Immediately |
+| Auto-continue budget | how many automatic `continue` turns after an output-cap truncation (0 = off) | Immediately |
+
+The card also marks the fields **you have overridden**, each with its own `Reset`.
+
+Why two different effect timings:
+
+- The first three values **belong to other preset plugins** (`compaction-basic` owns `thresholdRatio`/`retainRatio`, `tool-bootstrap` owns `bootstrapMaxTokens`). This plugin cannot change their runtime policy, so it writes the **preset files themselves**. A preset mount records a file stamp, and a changed stamp starts the next generation **for sessions created afterwards** — so no DSH restart is needed, but already-running sessions are unaffected. Before writing it keeps a `<preset>.bak-compact-agents` copy and replaces the file atomically (temp file + rename); only the target line changes, so comments and formatting survive.
+- The last two values **belong to this plugin** and are read at event time, so they apply immediately.
+
+> `settings: false` turns the whole Settings surface off (the tool and the notices are unaffected).
+
 ## How it works
 
 For each target it calls `ctx.compaction.compactNow(agent, signal)` and turns the outcome into a report row.
@@ -276,7 +297,7 @@ dsh-compact-agents
     └── cordis    -> <dsh checkout>/vendor/cordis
 ```
 
-The plugin imports exactly one thing: `defineTool` (from `@deepseek-ai/dsh-tools`). The `cordis` junction is needed only by `integration-test.mjs`.
+The plugin imports `defineTool` (from `@deepseek-ai/dsh-tools`) and **dynamically** imports `@deepseek-ai/schemastery` to declare its settings schema. The latter two junctions are needed only by the Settings surface and the tests; **a missing `schemastery` junction costs you one settings card, never the plugin** (the dynamic import only logs a warning).
 
 **Why the preset row must be an absolute path**: `agent-presets/src/specifier.ts` classifies an absolute drive-letter path through `pathToFileURL` (its comment says this is *"required for drive-letter paths on Windows"*), producing a `file:` row. A **bare package name inside a preset is resolved from the harness**, not from the caller's directory, so a package installed under the user directory would fail to resolve.
 
@@ -304,6 +325,26 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
+
+- **v0.4.0** — every tuning knob moves into Settings:
+  - New **Settings surface**: the host half registers the `compact-agents` settings namespace, and
+    the browser half (`lib/client.js`) registers a card under the same key in the
+    `settings.plugin.item` slot — official slot documentation: *"Keying on the namespace is what lets
+    a plugin distributed outside this repository contribute a card"*. **Settings → Plugins →
+    Configurable** therefore gains a `Compaction & auto-continue` card;
+  - Five editable fields: compaction trigger ratio, retained ratio, controlled-phase output budget,
+    compaction notices, auto-continue budget. The first three belong to other preset plugins, so this
+    plugin **writes the preset files** (backup + atomic replace + only the target line changes, so
+    comments and formatting survive) which takes effect for newly created sessions; the last two
+    belong to this plugin and apply **immediately**;
+  - The browser half is a **hand-written single-file bundle** (DSH's client module system is a lazy
+    CJS table — no bundler needed). It only requires the seed modules `react` and
+    `@deepseek-ai/dsh-client-store`, so the project still has zero npm dependencies;
+  - Two new test suites: `settings-test.mjs` (real schemastery + real cordis Context + preset text
+    surgery, always through temp files so real configs are never touched) and `client-test.mjs`
+    (fake `__ModuleLoader__` + stub require, assertions rendered through real React);
+  - `install.mjs` creates one more junction, `@deepseek-ai/schemastery` (missing it costs one
+    settings card, never the plugin).
 
 - **v0.3.0** — auto-continue when the output cap truncates a turn:
   - A turn ending with `turn/end{reason: 'max-tokens'}` now gets an automatic "继续" sent as the user

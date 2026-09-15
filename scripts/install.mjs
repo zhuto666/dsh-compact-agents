@@ -155,6 +155,12 @@ console.log('  ' + ensureJunction(
   path.join(dsh, 'vendor/cordis'),
   options.dryRun,
 ))
+// 设置面要用 schemastery 声明命名空间的 schema（动态 import，缺了只会少一个设置页，不会让插件挂掉）。
+console.log('  ' + ensureJunction(
+  path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/schemastery'),
+  path.join(dsh, 'vendor/schemastery'),
+  options.dryRun,
+))
 
 const presets = options.presets.length > 0 ? options.presets : discoverPresets()
 console.log('')
