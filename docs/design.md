@@ -174,7 +174,23 @@ if (measurement.totalTokens < spec.thresholdTokens) return null
 
 **匹配规则与引擎一致**：`modelPolicies` 里 provider+model 精确命中的那条才是实际生效值，所以命中了就只改那条（连带重建数组），没命中才改全局。命中判断需要路由目标，取自 `session.requestHeader().config`。
 
-**失败即退回，不猜**：配置对象形状不对、属性写不进去、写回后读出来的值不符，都原样返回；此时提示里的"旧代际"那行会说明两个值与出路。行配置 `livePresetParams: false` 整体关闭。风险是明确的：这是**写另一个插件的公开字段**，若将来 `compaction-basic` 改成构造期缓存 spec 或把 `config` 变成 getter，热同步会静默失效 —— 那时提示会立刻显示"改不进去"，用户仍有一条正路（新开对话）。
+**失败即退回，不猜**：配置对象形状不对、属性写不进去、写回后读出来的值不符，都原样返回；此时提示里的"旧代际"那行会说明两个值与出路。行配置 `livePresetParams: false` 整体关闭。
+
+**自我反证（v0.7.1）**："写进去了"不等于"引擎吃了"。策略阈值是构造期冻结的值，若上游哪天把 `resolveCompactSpec` 的结果也缓存起来，我们的替换就会**静默失效** —— 而 `ctx.compaction.config` 里明明写着新值，提示会跟着撒谎。所以热同步之后留一个待验证，用**下一次策略自己决定的压缩**反算：
+
+```
+达线判定: measurement.totalTokens >= window * thresholdRatio
+把 A(0.2) 抬到 B(0.5) 之后，若压缩发生在 before ∈ [window*A, window*B) 内 ⇒ 引擎用的还是 A
+```
+
+窗口从 `ctx.get('llm').resolveModelInfo(provider, model)` 取（注意必须 `ctx.get()`：`llm` 不在本插件的 `inject` 里，`ctx.llm` 会抛 `cannot get property "llm" without inject`），并在**补丁落下时**就预先查好 —— 等到压缩发生再查就晚了，那条路径是同步的。判定成立就把该代际标记为"引擎其实还在用 A"，此后提示按 A 报（`thresholdState` 优先读这个标记），并保留"新开一条对话"这条正路。
+
+取证的边界（宁可不验，也不误报）：
+
+- `compaction/start` 的 `data.turn === null` 是**回合之间的手动事务**（`/compact` 等），带 `sourceCommandId` 的是命令驱动的压缩 —— 两者在任意 token 数上都可能发生，不采信。
+- 我们自己请求的压缩（`compact_agents` 工具）不采信：调用前后给该会话打一个 60 秒标记，窗口内该会话的压缩一律不作为证据。
+- 反证的顺序必须在**同步之前**：先拿上一次补丁去验，再把新值同步进本轮。反过来的话，本轮压缩的 token 数还是按旧阈值判出来的，会被当新阈值的证据，自己冤枉自己。
+- 调低阈值无法这样反证（"还没压"与"引擎忽略"不可区分），保持待验证、不下结论。
 
 > ⚠️ 别把提示挂在 `stability: 'whole-surface'` 的那条路径上：`compactRegion(start, end, agent, signal)` 用整面快照比对(`assertWholeSurfaceUnchanged`)，运行期追加任何表面节点都会让它抛 `SurfaceChangedError`。自动压力路径与 `compactNow` 都是 `selected-span`，安全。
 

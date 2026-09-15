@@ -1,6 +1,6 @@
 {
   "name": "dsh-compact-agents",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "DeepSeek Harness 会话上下文强制压缩插件:模型可调用的 compact_agents 工具,忽略自动压力阈值,覆盖进程内所有活会话(主会话/子代理/AgentTeams 成员),忙则排队、本轮结束补压,逐目标回报遮蔽节点数与估算 token 数。Session-context force-compaction plugin for DeepSeek Harness: a model-callable compact_agents tool that ignores the automatic pressure threshold and covers every live session in the process (main session, sub-agents, AgentTeams members alike), queues a busy target and compacts it when its turn ends, and reports shadowed node counts and estimated tokens per target.",
   "private": true,
   "type": "module",

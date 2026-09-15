@@ -79,6 +79,138 @@ const CONTINUE_TEXT = '继续'
 const liveMounts = new Set()
 
 /**
+ * provider/model → 上下文窗口大小。校验热同步要用它把"阈值比例"换算成 token 触发线，
+ * 而压缩发生时那条路径是同步的（查不动模型信息），所以在补丁落下的那一刻就**预先查好**。
+ */
+const contextWindows = new Map()
+
+/** 刚被热同步改过阈值的代际：`ctx -> { from, to }`，等下一次真实压缩来反证。 */
+const pendingPatch = new WeakMap()
+
+/**
+ * 反证失败的代际：`ctx -> 引擎其实还在用的那个阈值`。
+ *
+ * 一旦发现引擎没吃新值（例如上游把 spec 改成构造期缓存），提示就按这个值报，不能让
+ * "配置里写着 ×0.35"冒充"实际按 ×0.35 压"。
+ */
+const patchFailed = new WeakMap()
+
+/**
+ * 我们自己刚请求过压缩的会话：`会话 id -> 标记时刻`。
+ *
+ * `compact_agents` 工具随时可以压，那次压缩的 token 数不说明策略阈值，所以窗口内该会话的
+ * `compaction/start` 一律不当作热同步的反证材料。
+ */
+const selfCompactions = new Map()
+
+/** 把接下来这段时间内该会话的压缩标记为"我们自己要求的"。 */
+function markSelfCompaction(agent) {
+  const id = agent?.session?.id ?? agent?.id
+  if (id !== undefined && id !== null) selfCompactions.set(String(id), Date.now())
+}
+
+/**
+ * 仅供测试：清掉热同步的进程级状态（窗口缓存、"我们自己压的"标记）。
+ * `pendingPatch` / `patchFailed` 按 ctx 记在 WeakMap 里，各用例自己安排顺序。
+ */
+export function resetHotSyncStateForTest() {
+  selfCompactions.clear()
+  contextWindows.clear()
+}
+
+/**
+ * 查一个路由目标的上下文窗口并缓存（查不到缓存 null，不再反复打搅适配器）。
+ * @param ctx - registrant context（借同 realm 的 `llm` 服务）。
+ * @param target - 路由目标。
+ */
+function resolveWindow(ctx, target) {
+  const key = `${target.provider}/${target.model}`
+  if (contextWindows.has(key)) return
+  contextWindows.set(key, null)
+  try {
+    // 必须走 `ctx.get()`：`llm` 不在本插件的 inject 列表里，`ctx.llm` 会直接抛
+    // `cannot get property "llm" without inject`。这里是可选依赖，拿不到就少一道校验。
+    const llm = ctx.get?.('llm')
+    const pending = llm?.resolveModelInfo?.(target.provider, target.model, new AbortController().signal)
+    void Promise.resolve(pending).then((info) => {
+      const window = info?.context?.contextWindow
+      if (typeof window === 'number' && window > 0) contextWindows.set(key, window)
+    }).catch(() => {})
+  } catch {
+    // 拿不到窗口只是少一道校验，不影响热同步本身。
+  }
+}
+
+/** 给这一代的所有活会话预先查好窗口：等到压缩发生时再查就太晚了（那是同步路径）。 */
+function primeContextWindows(ctx) {
+  try {
+    for (const agent of ctx.agents?.list?.() ?? []) {
+      const target = routedTargetOf(agent?.session)
+      if (target !== null) resolveWindow(ctx, target)
+    }
+  } catch {
+    // 拿不到 agent 列表也不影响主流程。
+  }
+}
+
+/**
+ * 用一次真实压缩反证热同步是否真的生效。
+ *
+ * 依据：达线判定是 `totalTokens >= 窗口 × thresholdRatio`。若把阈值从 A 抬到 B 之后，**策略自己
+ * 决定**的压缩却发生在"明显低于 B 线、又已经达到 A 线"的 token 数上，那引擎用的就还是 A ——
+ * 说明它不再每次调用现读 `this.config`（上游若改成构造期缓存 spec 就会这样）。此时记下 A，
+ * 之后提示按 A 报，并保留"新开一条对话"这条正路；调低阈值的情形无法这样反证，就保持待验证、
+ * 不轻易下结论。
+ *
+ * **只采信策略自己决定的压缩**：`turn === null` 是回合之间的手动事务（`/compact` 等，见
+ * `compaction/start` 的 data 文档），带 `sourceCommandId` 的是命令驱动的压缩，我们自己刚请求过的
+ * 那次也不算 —— 这三种在任意 token 数上都可能发生，拿它们取证会冤枉引擎。宁可少验一次，
+ * 也不能误报"热同步没生效"。
+ *
+ * @param ctx - registrant context。
+ * @param session - 事件所属会话。
+ * @param before - 本次压缩开始时的 token 估算。
+ * @param event - 已追加的 `compaction/start` 事件。
+ * @returns 判定为"引擎仍用旧值"时返回那个旧值，否则 null。
+ */
+function verifyPatch(ctx, session, before, event) {
+  const pending = pendingPatch.get(ctx)
+  if (pending === undefined || typeof before !== 'number') return null
+  const data = event?.data ?? {}
+  if (data.turn === null || data.sourceCommandId !== undefined) return null
+  const selfUntil = selfCompactions.get(String(session?.id))
+  if (typeof selfUntil === 'number' && Date.now() - selfUntil < 60_000) return null
+  const target = routedTargetOf(session)
+  if (target === null) return null
+  const window = contextWindows.get(`${target.provider}/${target.model}`)
+  if (typeof window !== 'number' || window <= 0) {
+    resolveWindow(ctx, target)
+    return null
+  }
+  const newLine = window * pending.to
+  const oldLine = window * pending.from
+  if (pending.to > pending.from) {
+    if (before >= newLine * 0.9) {
+      pendingPatch.delete(ctx)
+      return null
+    }
+    if (before >= oldLine) {
+      pendingPatch.delete(ctx)
+      patchFailed.set(ctx, pending.from)
+      ctx.logger.warn(
+        `compact-agents: 热同步没有生效 —— 压缩发生在 ${group(before)} tokens，`
+        + `而 ×${pending.to} 的触发线约 ${group(Math.round(newLine))}，说明引擎仍按 ×${pending.from} 判线`,
+      )
+      return pending.from
+    }
+    return null
+  }
+  // 调低阈值：只有在"比旧线还早就压了"时才是证据，否则不下结论。
+  if (before < oldLine) pendingPatch.delete(ctx)
+  return null
+}
+
+/**
  * 一次会话的**路由目标**（provider/model）—— 用来判断 `modelPolicies` 里有没有精确覆盖。
  *
  * 与引擎 `resolveTargetPolicy` 同一套匹配：只有 provider 与 model 都相等的那条才算覆盖。
@@ -169,6 +301,12 @@ function syncPresetParams(ctx, values = currentPresetValues(), target = null) {
     changes.push(`retainRatio ${scoped.retainRatio} → ${nextScoped.retainRatio}`)
   }
   ctx.logger.info(`compact-agents: 已热同步 preset 参数到正在运行的会话（${changes.join('，')}）`)
+  if (nextScoped.thresholdRatio !== scoped.thresholdRatio) {
+    // 换了阈值就留一个待验证：下一次真实压缩的 token 数会告诉我们引擎到底吃没吃新值。
+    pendingPatch.set(ctx, { from: scoped.thresholdRatio, to: nextScoped.thresholdRatio })
+    patchFailed.delete(ctx)
+    primeContextWindows(ctx)
+  }
   return 'synced'
 }
 
@@ -258,7 +396,8 @@ function appendNotice(ctx, session, summary, body) {
  * 为什么要报它：压缩参数在**会话建立时**被读进 `compaction-basic`（构造时 `resolveConfig` +
  * `deepFreeze`），而"改 preset 要新开一条对话"这件事本身就该被说清楚。本插件会先把新值
  * **热同步**进去（见 {@link syncPresetParams}），所以正常情况下这里报的就是新值；只有当热同步
- * 进不去（配置不可写、形状变了）时，才会出现"本会话仍是旧值"的提醒。
+ * 进不去（配置不可写、形状变了）时才报旧值 —— 包括"写进去了但引擎没吃"这种被
+ * {@link verifyPatch} 反证出来的情况。
  *
  * 读不到就返回 null（整句不出现），不让"报诊断"变成新的失败点。
  *
@@ -268,6 +407,7 @@ function appendNotice(ctx, session, summary, body) {
  */
 function thresholdState(ctx, session) {
   let mounted = null
+  const corrected = patchFailed.get(ctx)
   try {
     const config = ctx.compaction?.config
     if (config !== undefined && typeof config === 'object') {
@@ -278,6 +418,8 @@ function thresholdState(ctx, session) {
   } catch {
     mounted = null
   }
+  // 反证失败时以引擎实际在用的那个值为准：宁可报得保守，也不能让"配置里写着新值"冒充生效。
+  if (typeof corrected === 'number') mounted = corrected
   if (mounted === null) return null
   const current = currentPresetThreshold()
   return { mounted, current, stale: current !== null && current !== mounted }
@@ -476,8 +618,13 @@ function registerSessionWatch(ctx, mount) {
   ctx.on('session/event', (session, event) => {
     const type = event?.type
     try {
-      // 先热同步，再生成提示：这样"旧代际"那行只在真的同步不进去时才出现。
-      if (mount.livePresetParams !== false) syncPresetParams(ctx, currentPresetValues(), routedTargetOf(session))
+      // 顺序要紧：**先**反证上一次热同步，**再**把新值同步进去。
+      // 反过来的话，本次压缩的 token 数（还是按旧阈值判出来的）会被当成新阈值的证据，
+      // 结果自己冤枉自己。
+      if (mount.livePresetParams !== false) {
+        if (type === 'compaction/start') verifyPatch(ctx, session, measureTokens(ctx, session), event)
+        syncPresetParams(ctx, currentPresetValues(), routedTargetOf(session))
+      }
       const notice = liveConfig.notice ?? mount.notice
       const maxAutoContinues = liveConfig.maxAutoContinues ?? mount.maxAutoContinues
       if (notice
@@ -568,6 +715,8 @@ function scheduleWhenIdle(ctx, agent) {
     scheduled.delete(id)
     void (async () => {
       try {
+        // 这是我们自己要求的压缩：它的 token 数不代表策略阈值，别拿它反证热同步。
+        markSelfCompaction(agent)
         const result = await ctx.compaction.compactNow(agent, new AbortController().signal)
         ctx.logger.info(result === null
           ? `compact-agents: deferred compaction of ${id} found nothing safely compactable`
@@ -594,6 +743,8 @@ async function compactOne(ctx, agent, signal, whenBusy) {
   const id = String(agent.id)
   const before = measureTokens(ctx, agent.session)
   try {
+    // 同上：工具触发的压缩随时可能发生，不当作阈值证据。
+    markSelfCompaction(agent)
     const result = await ctx.compaction.compactNow(agent, signal)
     const after = measureTokens(ctx, agent.session)
     if (result === null) {

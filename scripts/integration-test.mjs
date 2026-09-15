@@ -20,6 +20,7 @@ import path from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { setPresetFilesForTest } from '../settings.js'
+import { resetHotSyncStateForTest } from '../index.js'
 import * as plugin from '../index.js'
 
 /** ToolRuntime 构造期需要的最小 systemPrompt 桩。 */
@@ -73,6 +74,23 @@ class StubTokenMeter extends Service {
 
   measure() {
     return { totalTokens: this.total }
+  }
+}
+
+/**
+ * 只实现本插件真正调用的 `resolveModelInfo`：热同步的效果校验要拿它换算出 token 触发线。
+ * 窗口做成可写的，测试里模拟"1M 窗口 × 0.2 = 200K 就该压"这种现场。
+ */
+class StubLlm extends Service {
+  constructor(ctx) {
+    super(ctx, 'llm')
+    this.contextWindow = 1_000_000
+    this.lookups = 0
+  }
+
+  async resolveModelInfo() {
+    this.lookups += 1
+    return { context: { contextWindow: this.contextWindow } }
   }
 }
 
@@ -136,6 +154,7 @@ ctx.plugin(StubSystemPrompt)
 ctx.plugin(ToolRuntime)
 ctx.plugin(StubCompaction)
 ctx.plugin(StubTokenMeter)
+ctx.plugin(StubLlm)
 ctx.plugin(StubAgents)
 ctx.plugin(plugin)
 
@@ -396,6 +415,12 @@ check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length ==
     && compaction.config.thresholdRatio === 0.2,
     JSON.stringify(compaction.config))
 
+  // 先把上一个补丁验证干净（620K 在新线之上），免得待验证状态串到后面的用例。
+  meter.total = 620000
+  await ctx.emit('session/event', surface, {
+    type: 'compaction/start', seq: 9120, time: 0, data: { compactionId: 'c12a', turn: 12 },
+  })
+
   // 同步不进去时（这里用只读属性模拟引擎形状变化）仍要说清两个值与出路。
   Object.defineProperty(compaction, 'config', {
     value: { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] },
@@ -410,6 +435,89 @@ check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length ==
     compaction.config.thresholdRatio === 0.2
     && staleBody.includes('×0.5') && staleBody.includes('×0.2') && staleBody.includes('新开一条对话'),
     staleBody)
+
+  // 效果校验：值写进去了，引擎到底吃没吃？拿**策略自己决定**的那次压缩反证。
+  {
+    resetHotSyncStateForTest()
+    const llm = ctx.get('llm')
+    const restore = () => Object.defineProperty(compaction, 'config', {
+      value: { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] },
+      writable: true,
+      configurable: true,
+    })
+
+    // (a) 反证通过：0.2 → 0.5 之后，压缩发生在 620K（新线 500K 之上），不该有任何提醒。
+    restore()
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 913, time: 0, data: { compactionId: 'c13', turn: 13 },
+    })
+    check('raising the threshold records a patch that still needs proof',
+      compaction.config.thresholdRatio === 0.5, JSON.stringify(compaction.config))
+    await settle()
+    check('the window lookup is primed at patch time, not at compaction time',
+      llm.lookups > 0, `${llm.lookups} lookup(s)`)
+    meter.total = 620000
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 914, time: 0, data: { compactionId: 'c14', turn: 14 },
+    })
+    // 触发线在折叠行的摘要里，正文里只会有热同步没成功那类提醒。
+    const healthy = String(noticeAt()?.data?.source?.summary)
+    check('a compaction above the new line passes verification silently',
+      healthy.includes('触发线 ×0.5')
+      && !String(noticeAt()?.data?.content?.[0]?.text).includes('热同步没成功'), healthy)
+
+    // (b) 回合之间的手动压缩（`turn: null`）在任意 token 数上都会发生，不能拿它冤枉引擎。
+    restore()
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 915, time: 0, data: { compactionId: 'c15', turn: 15 },
+    })
+    meter.total = 250000
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 916, time: 0, data: { compactionId: 'c16', turn: null },
+    })
+    const manual = String(noticeAt()?.data?.source?.summary)
+    check('a manual compaction is not taken as proof that hot-sync failed',
+      manual.includes('触发线 ×0.5')
+      && !String(noticeAt()?.data?.content?.[0]?.text).includes('热同步没成功'), manual)
+
+    // (b2) 我们自己刚请求过压缩的会话也不算证据（工具随时可以压）；对**别的**会话的标记
+    //      不该影响本会话取证，所以这条用子代理的会话验证，surface 那边留着给 (c)。
+    const child = ctx.get('agents').childAgent
+    child.session.requestHeader = () => ({ config: { provider: 'p', model: 'm' } })
+    await def.execute(
+      { scope: 'ids', ids: ['session-child'], whenBusy: 'skip' },
+      { agent: rootAgent, signal: new AbortController().signal, deferContext() {} },
+    )
+    child.session.appended.length = 0
+    await ctx.emit('session/event', child.session, {
+      type: 'compaction/start', seq: 9170, time: 0, data: { compactionId: 'c17a', turn: 17 },
+    })
+    check('a compaction we asked for ourselves is not taken as proof either',
+      String(child.session.appended.at(-1)?.data?.source?.summary).includes('触发线 ×0.5'),
+      String(child.session.appended.at(-1)?.data?.source?.summary))
+    delete child.session.requestHeader
+
+    // (c) 引擎真的没吃（上游把 spec 缓存到构造期就会这样）：250K 就压了 —— 提示必须改口。
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 917, time: 0, data: { compactionId: 'c17', turn: 17 },
+    })
+    const caught = String(noticeAt()?.data?.content?.[0]?.text)
+    check('a policy-driven compaction below the new line exposes that the engine ignored the patch',
+      caught.includes('×0.2') && caught.includes('×0.5') && caught.includes('热同步没成功'), caught)
+    check('the trigger line falls back to the value the engine really uses',
+      String(noticeAt()?.data?.source?.summary).includes('触发线 ×0.2'),
+      String(noticeAt()?.data?.source?.summary))
+
+    // (d) 反证失败之后不再自称生效：后续压缩的触发线继续按旧值报。
+    meter.total = 620000
+    await ctx.emit('session/event', surface, {
+      type: 'compaction/start', seq: 918, time: 0, data: { compactionId: 'c18', turn: 18 },
+    })
+    check('after a failed verification the notice keeps reporting the real value',
+      String(noticeAt()?.data?.source?.summary).includes('触发线 ×0.2'),
+      String(noticeAt()?.data?.source?.summary))
+  }
+
   setPresetFilesForTest(null)
   delete surface.requestHeader
   delete ctx.get('compaction').config

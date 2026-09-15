@@ -81,6 +81,7 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 - 只同步 `thresholdRatio` / `retainRatio`（都在 `ResolvedConfig` 里、都在调用时读），并守住 `retainRatio < thresholdRatio`；`bootstrapMaxTokens` 不在其中。
 - `modelPolicies` 精确命中 provider+model 时**只改命中那条**（连带重建数组），没命中才改全局 —— 与引擎 `resolveTargetPolicy` 同款。
 - 写完**读回校验**，读不到/写不进/形状不对一律原样返回并保留"旧代际"提示兜底；`livePresetParams: false` 可整体关闭。别把这条路径写成会抛异常的强依赖。
+- **自我反证（v0.7.1）**：写进去 ≠ 引擎吃了。补丁落下时留一个待验证（并预先用 `ctx.get('llm').resolveModelInfo` 查好窗口 —— `llm` 不在 inject 里，`ctx.llm` 会抛），下一次**策略自己决定**的压缩若发生在 `[窗口×旧值, 窗口×新值)` 内，就判定引擎没吃，此后按旧值报。采信边界：`data.turn === null`、带 `sourceCommandId`、以及我们自己工具触发的压缩（60 秒会话标记）一律不采信；反证必须在**同步之前**（顺序反了会拿按旧阈值判出来的本次压缩当新阈值的证据）。
 
 ## 改动生效时机(最容易踩的坑)
 
