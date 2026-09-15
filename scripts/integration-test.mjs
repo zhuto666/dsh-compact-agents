@@ -1,7 +1,7 @@
 /**
  * 真机加载测试：不是假 ctx，而是**真的 cordis Context + 真的 ToolRuntime**。
  *
- * 目的：证明 preset 里那一行 `E:/dsh-compact-agents/index.js` 真的能被加载、
+ * 目的：证明 preset 里那一行(`<repo>/index.js` 绝对路径)真的能被加载、
  * `inject` 真的能解析、`ctx.tools.register(defineTool(...))` 真的能被注册表接受、
  * 并且注册后能用 `ctx.tools.get('compact_agents')` 查到、参数 schema 真的能解析。
  * 这些是单元测试（假 ctx）覆盖不到的部分。

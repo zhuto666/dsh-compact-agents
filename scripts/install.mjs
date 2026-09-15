@@ -5,7 +5,7 @@
  *
  * 用法：
  *   node scripts/install.mjs                              # 自动探测 DSH 检出与 preset
- *   node scripts/install.mjs --dsh D:/dy/deepseek-harness
+ *   node scripts/install.mjs --dsh /path/to/deepseek-harness
  *   node scripts/install.mjs --preset <agent.cordis.yml> [--preset ...]
  *   node scripts/install.mjs --dry-run                    # 只报告将要做什么
  *
@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets } from './lib/presets.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets, resolveDshCheckout } from './lib/presets.mjs'
 
 /** 解析命令行参数（比另两个脚本多一个 `--dsh`）。 */
 function parseArgs(argv) {
@@ -28,30 +28,6 @@ function parseArgs(argv) {
     else throw new Error(`install: unknown argument ${token}`)
   }
   return options
-}
-
-/** 一个目录是否是可用的 DSH 检出（要同时有 tools 包和 vendor/cordis）。 */
-function isDshCheckout(dir) {
-  return fs.existsSync(path.join(dir, 'packages/core/tools/package.json'))
-    && fs.existsSync(path.join(dir, 'vendor/cordis/package.json'))
-}
-
-/** 按候选顺序探测 DSH 检出。 */
-function resolveDshCheckout(explicit) {
-  const candidates = [
-    explicit,
-    path.join(path.dirname(DSH_HOME), 'dy/deepseek-harness'),
-    'D:/dy/deepseek-harness',
-    'E:/dy/deepseek-harness',
-    'C:/dy/deepseek-harness',
-  ].filter(candidate => typeof candidate === 'string' && candidate !== '')
-  for (const candidate of candidates) {
-    if (isDshCheckout(candidate)) return path.resolve(candidate)
-  }
-  throw new Error(
-    'install: cannot locate the DSH checkout; pass --dsh <checkout> '
-    + '(it must contain packages/core/tools and vendor/cordis)',
-  )
 }
 
 /**

@@ -25,6 +25,80 @@ export const ROW_ID = 'compact-agents'
 export const GROUP_ID = 'compaction'
 
 /**
+ * 一个目录是否是可用的 DSH 检出。
+ *
+ * 两个标志文件缺一不可：`packages/core/tools`（插件要解析的 `@deepseek-ai/dsh-tools`）
+ * 与 `vendor/cordis`（宿主框架）。只认检出，不认"随便一个装了 dsh 的 node_modules"。
+ * @param dir - 待检查目录。
+ * @returns 是检出则为 true。
+ */
+export function isDshCheckout(dir) {
+  return fs.existsSync(path.join(dir, 'packages/core/tools/package.json'))
+    && fs.existsSync(path.join(dir, 'vendor/cordis/package.json'))
+}
+
+/**
+ * 从一个已知的包目录向上找检出根 —— 检出可能装在任意深度，不能写死盘符。
+ * @param from - 起始目录（通常是某个 `@deepseek-ai/*` 包的真实路径）。
+ * @returns 检出根，找不到则为 undefined。
+ */
+function walkUpToCheckout(from) {
+  let dir = from
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (isDshCheckout(dir)) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+/**
+ * 定位 DSH 检出，**不依赖任何本机盘符**。
+ *
+ * 依次尝试：显式参数 → 本项目 `node_modules` 里既有的联接目标 → 各 profile 的
+ * `node_modules` 里的 `@deepseek-ai/dsh-tools` → 家目录下的常见克隆位置。
+ * 前两条是"自描述"的：安装过一次之后，联接本身就记录了检出在哪里。
+ * @param explicit - `--dsh` 或 `$DSH_CHECKOUT` 给出的路径。
+ * @returns 检出根绝对路径。
+ * @throws 全部候选都落空时抛出，并提示用 `--dsh` 指定。
+ */
+export function resolveDshCheckout(explicit) {
+  const seeds = [
+    explicit,
+    process.env.DSH_HARNESS,
+    path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'),
+  ]
+  const profiles = path.join(DSH_HOME, 'profiles')
+  if (fs.existsSync(profiles)) {
+    for (const profile of fs.readdirSync(profiles, { withFileTypes: true })) {
+      seeds.push(path.join(profiles, profile.name, 'node_modules/@deepseek-ai/dsh-tools'))
+    }
+  }
+  seeds.push(
+    path.join(os.homedir(), 'deepseek-harness'),
+    path.join(os.homedir(), 'dy', 'deepseek-harness'),
+    path.join(os.homedir(), 'code', 'deepseek-harness'),
+  )
+  for (const seed of seeds) {
+    if (typeof seed !== 'string' || seed === '') continue
+    // 既有的联接要解到真实路径，否则向上走会停在插件自己的目录里。
+    let start = seed
+    try {
+      start = fs.realpathSync(seed)
+    } catch {
+      // 不存在就按原样试：用户可能直接把检出根传了进来。
+    }
+    const found = walkUpToCheckout(start)
+    if (found !== undefined) return found
+  }
+  throw new Error(
+    'cannot locate the DSH checkout; pass --dsh <checkout> or set DSH_CHECKOUT '
+    + '(it must contain packages/core/tools and vendor/cordis)',
+  )
+}
+
+/**
  * 列出默认要处理的 preset 文件：
  *   1. `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（用户自建 preset）；
  *   2. `$DSH_HOME/profiles/<profile>/node_modules/@linxin666/<pkg>/presets/<name>/agent.cordis.yml`

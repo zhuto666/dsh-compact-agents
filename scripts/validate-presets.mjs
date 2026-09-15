@@ -10,10 +10,12 @@
  */
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
-import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs } from './lib/presets.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs, resolveDshCheckout } from './lib/presets.mjs'
 
 // 本项目刻意不装依赖（离线、零安装）：js-yaml 与 cordis 一样从 DSH 检出里借。
-const DSH_CHECKOUT = process.env.DSH_CHECKOUT ?? 'D:/dy/deepseek-harness'
+// 检出位置靠自描述探测（--dsh / $DSH_CHECKOUT / 既有联接 / profile），不写死盘符。
+const dshFlag = process.argv.indexOf('--dsh')
+const DSH_CHECKOUT = resolveDshCheckout(dshFlag === -1 ? undefined : process.argv[dshFlag + 1])
 const require = createRequire(`${DSH_CHECKOUT.replace(/\\/g, '/')}/package.json`)
 const yaml = require('js-yaml')
 // preset 里用 `!!js process.platform === 'win32'` 这类表达式，标准 schema 不认。

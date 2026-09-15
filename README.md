@@ -53,8 +53,8 @@ DSH 的手动压缩入口只有一个**人机命令** `/compact`(`@deepseek-ai/d
 ### 一键安装(推荐)
 
 ```sh
-git clone https://github.com/zhuto666/dsh-compact-agents.git E:/dsh-compact-agents
-cd E:/dsh-compact-agents
+git clone https://github.com/zhuto666/dsh-compact-agents.git
+cd dsh-compact-agents
 node scripts/install.mjs --dry-run     # 先预览要改什么(不改盘)
 node scripts/install.mjs               # 确认后执行
 ```
@@ -66,10 +66,12 @@ node scripts/install.mjs               # 确认后执行
 
 ```yaml
     - id: compact-agents
-      name: 'E:/dsh-compact-agents/index.js'
+      name: '/absolute/path/to/dsh-compact-agents/index.js'   # 安装脚本会自动填成你的真实绝对路径
 ```
 
-自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定，或 `--dsh <checkout>` 指定 DSH 检出位置(默认自动探测)。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
+自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
+
+**DSH 检出位置同样是自动探测的，脚本里不写死任何盘符**：依次尝试 `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS` → 本项目 `node_modules` 里已有的联接目标(装过一次就连带记下了检出在哪儿) → 各 profile 的 `node_modules` → 家目录下的常见克隆位置；全都落空才报错并提示用 `--dsh` 指定。
 
 **那行路径不是写死的，是安装时算出来的** —— `install.mjs` 用自己所在目录推导 `PLUGIN_ENTRY`，所以：
 
@@ -102,14 +104,14 @@ node scripts/validate-presets.mjs
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
   thresholdRatio = 0.2  retainRatio = 0.05
-  compact-agents -> E:/dsh-compact-agents/index.js (存在)
+  compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (存在)
 ALL OK (4 preset mounted)
 ```
 
 ### 更新 / 卸载
 
 ```sh
-git -C E:/dsh-compact-agents pull          # 更新:拉取后重新执行 install.mjs(幂等)
+git -C dsh-compact-agents pull          # 更新:拉取后重新执行 install.mjs(幂等)
 node scripts/uninstall.mjs --dry-run       # 卸载:先预览
 node scripts/uninstall.mjs                 # 移除挂载行 + 删除自己建的 junction
 ```
@@ -245,6 +247,8 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 ## 更新历史
 
 - **v0.1.0** — 首个版本：`compact_agents` 工具(4 种 scope、忙则排队)、一键安装/卸载/校验脚本、四层验证(自检 / 行为测试 / 真机集成测试 / preset 校验)。
+  - 安装脚本支持**失效路径自愈**(项目移动/改名后重跑即修正)与 `--force` 重新指向；
+  - DSH 检出位置改为**自描述探测**，脚本与文档中不含任何本机盘符。
 
 ## License
 

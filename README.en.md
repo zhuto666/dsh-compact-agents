@@ -53,8 +53,8 @@ So "sessions get more expensive the longer they run" used to be solvable only by
 ### One-shot install (recommended)
 
 ```sh
-git clone https://github.com/zhuto666/dsh-compact-agents.git E:/dsh-compact-agents
-cd E:/dsh-compact-agents
+git clone https://github.com/zhuto666/dsh-compact-agents.git
+cd dsh-compact-agents
 node scripts/install.mjs --dry-run     # preview the changes first (touches nothing)
 node scripts/install.mjs               # apply
 ```
@@ -66,10 +66,12 @@ The script does exactly two things, and is **idempotent**:
 
 ```yaml
     - id: compact-agents
-      name: 'E:/dsh-compact-agents/index.js'
+      name: '/absolute/path/to/dsh-compact-agents/index.js'   # the installer fills in your real absolute path
 ```
 
-It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly, or `--dsh <checkout>` to point at the DSH checkout (auto-detected by default). A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
+It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly. A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
+
+**The DSH checkout is auto-detected too — no drive letter is hard-coded anywhere**: the script tries `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS`, then the existing junction target in this project's `node_modules` (one install is enough to record where the checkout lives), then every profile's `node_modules`, then common clone locations under the home directory — and only then fails with a hint to pass `--dsh`.
 
 **That path is not hard-coded — it is computed at install time.** `install.mjs` derives `PLUGIN_ENTRY` from its own location, so:
 
@@ -102,14 +104,14 @@ It reports the mount row's location per preset, whether the referenced file exis
 .agent-presets/liangshen/agent.cordis.yml
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
   thresholdRatio = 0.2  retainRatio = 0.05
-  compact-agents -> E:/dsh-compact-agents/index.js (存在)
+  compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (exists)
 ALL OK (4 preset mounted)
 ```
 
 ### Update / uninstall
 
 ```sh
-git -C E:/dsh-compact-agents pull          # update: pull, then re-run install.mjs (idempotent)
+git -C dsh-compact-agents pull          # update: pull, then re-run install.mjs (idempotent)
 node scripts/uninstall.mjs --dry-run       # uninstall: preview first
 node scripts/uninstall.mjs                 # remove the mount row + delete the junctions it created
 ```
@@ -245,6 +247,8 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 ## Changelog
 
 - **v0.1.0** — first release: the `compact_agents` tool (four scopes, queue-when-busy), one-shot install/uninstall/validate scripts, and four verification layers (self-check / behaviour test / real-machine integration test / preset validation).
+  - The installer repairs a **stale plugin path** (move or rename the project, re-run, done) and supports `--force` to repoint;
+  - DSH checkout discovery is now **self-describing** — neither the scripts nor the docs contain a machine-specific drive letter.
 
 ## License
 
