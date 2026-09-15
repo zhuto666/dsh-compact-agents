@@ -71,6 +71,19 @@ node scripts/install.mjs               # 确认后执行
 
 自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定，或 `--dsh <checkout>` 指定 DSH 检出位置(默认自动探测)。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
 
+**那行路径不是写死的，是安装时算出来的** —— `install.mjs` 用自己所在目录推导 `PLUGIN_ENTRY`，所以：
+
+- 你在哪儿克隆/放这个项目，那行就指向哪儿；
+- **项目被移动或改名后，重跑一次 `install.mjs` 就会自动改正**：发现已有行指向一个不存在的路径时直接 `repaired`；若旧路径仍然有效(例如另存了一份副本)，则只 `WARN` 不动手，加 `--force` 才重新指向。
+
+```sh
+node scripts/install.mjs --dry-run    # 预览(不改盘)
+node scripts/install.mjs              # 执行；自动修复失效路径
+node scripts/install.mjs --force      # 旧路径还有效时也强制重新指向
+```
+
+> **为什么不能像普通包那样只写包名？** 这不是偷懒，是 DSH 的既定语义：preset 行里的**裸包名是从 harness 安装位置解析的**(`agent-presets/src/mount.ts` 的 `PresetTree.import` 注释原文 *"a package name resolves from the harness base"*)，不是从用户目录；装在工作区/用户目录的包根本解析不到。所以第三方插件在这里只有两条路——写绝对路径，或把插件文件放进 preset 目录跟着走。本项目选前者：**单一真源**，不给每个 preset 留副本。
+
 ### 生效
 
 **新开一条对话即可，不必重启 `dsh`。** preset 改动靠 standing mount 的**文件戳热重载**(戳 = `stat` 的 `mtimeMs` + `size`)：戳变了，下一条新会话重新挂载一代，就带上工具；已经 composed 的会话因 `agent-preset/locked` 拿不到，属预期。
@@ -111,7 +124,13 @@ node scripts/deferred-test.mjs       # 忙→排队→idle 补压 的行为测�
 node scripts/selftest.mjs            # 模块导入 + defineTool 规格自检
 ```
 
-改完 `index.js` 后**不需要重新安装**：preset 引用的是绝对路径，文件戳一变，下一条新会话就是新的实现。
+改完 `index.js` 后**必须重启 `dsh` 才能真正生效** —— 这一点很容易踩坑：
+
+- Node 的 **ESM 模块缓存按 URL 命中**，preset 重新挂载**不会**清它(DSH 自己的 HMR 插件是靠显式清 `internal.loadCache` 才能热重载的，而它在 profile 里默认 `disabled`)；
+- 所以"新开一条对话"只会重新挂载 **preset**，插件的模块本身仍是进程里已缓存的旧代码；
+- `scripts/*.mjs` 是每次直接执行的脚本，**不受影响**，改完立即是新的。
+
+> 只有**改了 `install.mjs` 或 preset** 时，新开对话就够了；**改了插件 `.js` 就必须重启 `dsh`**。
 
 ## 用法
 
@@ -133,6 +152,14 @@ compact_agents(scope = "others" | "all" | "self" | "ids", ids?: string[], whenBu
 - 「把其他会话都压一遍」→ `scope: "others"`
 - 「我这条对话也一起压」→ `scope: "all"`(你自己会被排队，本轮结束补压)
 - 「只压我自己」→ `scope: "self"`
+
+> **模型没调用它？** 工具描述里已写明"用户要求压缩上下文时**立即调用**、不要反问"，但仍可能遇到模型选择先确认一下。最稳的说法是**把工具名说出来**：
+>
+> ```
+> 调用 compact_agents，scope=all，把所有会话压一遍
+> ```
+>
+> 工具本身与模型行为无关——只要它在工具清单里，点名调用必定执行。
 
 返回每个目标一行，例如：
 

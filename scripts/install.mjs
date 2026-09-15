@@ -18,10 +18,11 @@ import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets
 
 /** 解析命令行参数（比另两个脚本多一个 `--dsh`）。 */
 function parseArgs(argv) {
-  const options = { dsh: process.env.DSH_CHECKOUT, presets: [], dryRun: false }
+  const options = { dsh: process.env.DSH_CHECKOUT, presets: [], dryRun: false, force: false }
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
     if (token === '--dry-run') options.dryRun = true
+    else if (token === '--force') options.force = true
     else if (token === '--dsh') options.dsh = argv[++i]
     else if (token === '--preset') options.presets.push(argv[++i])
     else throw new Error(`install: unknown argument ${token}`)
@@ -84,12 +85,25 @@ function ensureJunction(linkPath, targetPath, dryRun) {
  * @param dryRun - 只报告时不动盘。
  * @returns 一行人类可读的结果。
  */
-function patchPreset(file, entry, dryRun) {
+function patchPreset(file, entry, dryRun, force) {
   const label = file.replace(`${DSH_HOME}${path.sep}`, '')
   const original = fs.readFileSync(file, 'utf8')
   const lines = original.split('\n')
-  if (lines.some(line => new RegExp(`^\\s*-\\s*id:\\s*${ROW_ID}\\s*$`).test(line))) {
-    return `ok       ${label} (row already present)`
+  const existing = lines.findIndex(line => new RegExp(`^\\s*-\\s*id:\\s*${ROW_ID}\\s*$`).test(line))
+  if (existing !== -1) {
+    // 项目可能已经被移动/改名：行还在，但指向的路径失效了。这种情况必须**自愈**，
+    // 否则 preset 会引用一个不存在的文件，而用户只会看到"插件没生效"。
+    const current = /^\s*name:\s*'?([^'\n]+)'?\s*$/.exec(lines[existing + 1] ?? '')?.[1]?.trim()
+    if (current === undefined) return `WARN     ${label} (${ROW_ID} row has no readable name)`
+    if (current.replace(/\\/g, '/') === entry) return `ok       ${label} (row already present)`
+    if (fs.existsSync(current) && !force) {
+      return `WARN     ${label} points at ${current}, not this project — rerun with --force to repoint`
+    }
+    if (dryRun) return `repoint  ${label} (${current} -> ${entry})`
+    lines[existing + 1] = lines[existing + 1].replace(current, entry)
+    fs.writeFileSync(`${file}.bak`, original)
+    fs.writeFileSync(file, lines.join('\n'))
+    return `repaired ${label} (${current} -> ${entry})`
   }
   const groupIndex = lines.findIndex(line => new RegExp(`^\\s*-\\s*id:\\s*${GROUP_ID}\\s*$`).test(line))
   if (groupIndex === -1) return `SKIP     ${label} (no \`- id: ${GROUP_ID}\` group)`
@@ -172,7 +186,7 @@ console.log(`presets (${presets.length}):`)
 if (presets.length === 0) {
   console.log('  none found — pass --preset <agent.cordis.yml> explicitly')
 }
-for (const file of presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun))
+for (const file of presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
 
 console.log('')
 console.log('next steps:')

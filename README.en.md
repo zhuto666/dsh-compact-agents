@@ -71,6 +71,19 @@ The script does exactly two things, and is **idempotent**:
 
 It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly, or `--dsh <checkout>` to point at the DSH checkout (auto-detected by default). A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
 
+**That path is not hard-coded — it is computed at install time.** `install.mjs` derives `PLUGIN_ENTRY` from its own location, so:
+
+- wherever you clone or keep this project, that is what the row points at;
+- **after moving or renaming the project, re-running `install.mjs` fixes it automatically**: a row pointing at a path that no longer exists is repaired outright; if the old path is still valid (say a second copy exists) it only warns, and `--force` repoints it.
+
+```sh
+node scripts/install.mjs --dry-run    # preview (touches nothing)
+node scripts/install.mjs              # apply; repairs a stale path automatically
+node scripts/install.mjs --force      # repoint even when the old path is still valid
+```
+
+> **Why can it not simply name a package, like an ordinary dependency?** That is DSH's own semantics, not laziness: a **bare package name in a preset row resolves from the harness installation** (`agent-presets/src/mount.ts`, `PresetTree.import`: *"a package name resolves from the harness base"*), not from the user directory, so a package installed in a workspace or home directory is simply not found. A third-party preset row therefore has exactly two options — an absolute path, or shipping the plugin file inside the preset directory. This project takes the first: **a single source of truth**, with no per-preset copies to drift.
+
 ### Activation
 
 **Opening a new conversation is enough — no `dsh` restart required.** Preset edits hot-reload through the standing mount's **file stamp** (the `stat` `mtimeMs` + `size`): when the stamp changes, the next new session mounts a fresh generation and gets the tool. Sessions that are already composed keep the old generation because `select` / `swap` refuses with `agent-preset/locked`, exactly as designed.
@@ -111,7 +124,13 @@ node scripts/deferred-test.mjs       # queue-then-compact behaviour test (fake c
 node scripts/selftest.mjs            # module import + defineTool spec self-check
 ```
 
-Editing `index.js` needs **no reinstall**: the preset references an absolute path, so once the file stamp changes the next new conversation runs the new implementation.
+Editing `index.js` **requires a `dsh` restart to take effect** — an easy trap:
+
+- Node's **ESM module cache is keyed by URL**, and re-mounting a preset does **not** clear it (DSH's own HMR plugin can hot-reload only because it explicitly clears `internal.loadCache`, and it ships `disabled` in the profile);
+- so "open a new conversation" only re-mounts the **preset**; the plugin module itself is still the copy already cached in the process;
+- the `scripts/*.mjs` files are plain scripts executed fresh each time, so they are **not** affected.
+
+> A new conversation is enough only when you changed `install.mjs` or a preset; **changing the plugin `.js` requires restarting `dsh`**.
 
 ## Usage
 
@@ -133,6 +152,14 @@ Typical prompts:
 - "compact every other session" → `scope: "others"`
 - "compact this conversation too" → `scope: "all"` (you are queued and compacted when this turn ends)
 - "compact only myself" → `scope: "self"`
+
+> **Model did not call it?** The tool description already says to call this **immediately** when the user asks to compress context, never to ask back first — but a model may still choose to confirm. The most reliable phrasing **names the tool**:
+>
+> ```
+> call compact_agents with scope=all to compress every session
+> ```
+>
+> The tool is independent of model behaviour: as long as it is in the tool catalog, naming it always executes.
 
 One row is returned per target, for example:
 

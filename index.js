@@ -40,10 +40,16 @@ const WHEN_BUSY = ['queue', 'skip']
 const scheduled = new Set()
 
 const DESCRIPTION_HEAD =
-  'Force-compact agent sessions now, ignoring the automatic pressure threshold. Every live '
-  + 'session in the process is a candidate — the main session, ordinary sub-agents, and team '
-  + 'members alike. Each target is compacted with the manual entry point, so a session is '
-  + 'reduced even when it is nowhere near the automatic trigger line.'
+  'Compress the conversation context NOW. Call this tool immediately whenever the user asks to '
+  + 'compress / compact the context or complains that a session is too long — including terse or '
+  + 'colloquial phrasings such as "压一遍", "压缩一下", "压一下上下文", "compact the context", '
+  + '"free up context". This tool IS that action: do NOT ask a clarifying question first, and do '
+  + 'NOT go looking for a plugin or a settings page. Choose the scope yourself — normally '
+  + '"others" to sweep every other live session — and run it. It force-compacts sessions, '
+  + 'ignoring the automatic pressure threshold, and every live session in the process is a '
+  + 'candidate: the main session, ordinary sub-agents, and team members alike. Each target is '
+  + 'compacted through the manual entry point, so a session is reduced even when it is nowhere '
+  + 'near the automatic trigger line.'
 
 const DESCRIPTION_TAIL =
   ' A target must be idle to compact immediately. A session that is mid-turn is either queued '
