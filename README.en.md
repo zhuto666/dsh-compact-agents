@@ -272,6 +272,8 @@ Open **Settings → Plugins → Configurable** and you will find a `Compaction &
 
 The card also marks the fields **you have overridden**, each with its own `Reset`.
 
+What the card itself looks like is described in prose for now (the table above is its complete field list); for UI screenshots see [docs/images](docs/images/README.md) — that page records the exact filenames of the two planned screenshots, how to capture them, and how to link them into this document.
+
 The card can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that Settings shows neither the namespace nor the card — with no error at all. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md)).
 
 Why two different effect timings:
@@ -308,6 +310,20 @@ The three numbers each govern one segment, with no overlap: `thresholdRatio` gov
 `retainRatio` governs **how much verbatim history survives**, and `bootstrapMaxTokens` governs **how much the
 model may say in the turns right after a compaction**. None of them governs how good the summary is — that is
 the summarization model's job.
+
+Drawn as a chart, the same chain is one compaction end to end (the numbers match the prose version above):
+
+```mermaid
+flowchart TD
+    A["Before: system prompt 10K + history 190K<br/>≈ 200K tokens"] --> B["Hits the thresholdRatio 0.2 trigger line<br/>(1M window × 0.2 = 200K)"]
+    B --> C["Compaction: everything outside “the most recent 50K”<br/>is masked into one summary (not deleted, only removed from what is sent)"]
+    C --> D["After: system prompt 10K + summary 3K + recent verbatim 50K<br/>≈ 63K tokens"]
+    D --> E["“the most recent 50K” = retainRatio 0.05 × 1M window"]
+    D --> F["Enters the controlled phase:<br/>from now on each request may output at most bootstrapMaxTokens"]
+```
+
+There is a single thread: **hits the line → masked into a summary → enters the controlled phase**. The sections
+below take it apart segment by segment.
 
 #### Retained ratio `retainRatio`
 

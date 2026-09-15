@@ -268,6 +268,8 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 卡片上还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
 
+卡片本身长什么样，目前以文字描述为主（上面的字段表就是它的全部字段）；界面截图见 [docs/images](docs/images/README.md)——该目录写清了计划中的两张截图叫什么名字、怎么截、截好后怎么接进本文。
+
 卡片能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是设置页里既没有命名空间也没有卡片、且毫无报错。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md)）。
 
 设计要点（为什么分成两种生效时机）：
@@ -303,6 +305,19 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 三个数各管一段，互不重叠：`thresholdRatio` 管**什么时候压**，`retainRatio` 管**压完留下多少原文**，
 `bootstrapMaxTokens` 管**压完那几轮最多让它说多少**。没有一个参数管"摘要写得好不好"——那是摘要模型的职责。
+
+把上面这条链路画成图，就是一次压缩的全过程（数值与文字版一致）：
+
+```mermaid
+flowchart TD
+    A["压缩前：系统提示 1 万 + 历史 19 万<br/>≈ 20 万 tokens"] --> B["撞到 thresholdRatio 0.2 的触发线<br/>（1M 窗口 × 0.2 = 20 万）"]
+    B --> C["压缩：把「最近 5 万」以外的部分<br/>遮蔽成一段摘要（不删除，只移出发送内容）"]
+    C --> D["压缩后：系统提示 1 万 + 摘要 0.3 万 + 最近原文 5 万<br/>≈ 6.3 万 tokens"]
+    D --> E["「最近 5 万」= retainRatio 0.05 × 1M 窗口"]
+    D --> F["进入受控阶段：<br/>此后每次请求最多输出 bootstrapMaxTokens"]
+```
+
+主线只有一条：**达线 → 遮蔽成摘要 → 进入受控阶段**。下面按段拆开讲。
 
 #### 压缩后保留比例 `retainRatio`
 
