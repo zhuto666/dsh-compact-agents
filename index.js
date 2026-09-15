@@ -59,6 +59,28 @@ const inFlight = new Map()
 /** 已收到摘要、还没收到结束标记的压缩：compactionId -> { nodes, tokens }。 */
 const summaries = new Map()
 
+/** 每个会话连续自动续写的次数；一轮正常结束即清零。 */
+const autoContinues = new Map()
+
+/** `maxAutoContinues` 的默认值：连续截断时最多自动续写两次。 */
+const DEFAULT_MAX_AUTO_CONTINUES = 2
+
+/** 自动续写时替用户发出的那句话。 */
+const CONTINUE_TEXT = '继续'
+
+/**
+ * 解析行配置里的自动续写次数上限。
+ * @param config - 行配置；`maxAutoContinues: 0` 或 `false` 关闭自动续写。
+ * @returns 0 表示关闭，否则为该会话允许的最大连续续写次数。
+ */
+function resolveMaxAutoContinues(config) {
+  const raw = config?.maxAutoContinues
+  if (raw === false) return 0
+  if (raw === undefined) return DEFAULT_MAX_AUTO_CONTINUES
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return raw
+  return DEFAULT_MAX_AUTO_CONTINUES
+}
+
 /**
  * 千分位格式化 token 数。
  * @param value - token 数。
@@ -180,26 +202,133 @@ function noticeFor(ctx, session, event) {
 }
 
 /**
- * 订阅会话追加事件，让压缩生命周期在对话区可见。
+ * 找到某个会话对应的活 agent。
+ *
+ * 自动续写必须走 `agent.followup`（内部 `send(message, 'next-turn', true)` + `wakeDriver`）
+ * —— 这正是人在界面上发一句话时走的同一条路（`session-controller/src/commands.ts` 里
+ * `agent.followup(message)`），而单纯往会话表面 `append` 一条 user/message **不会**唤醒
+ * driver 开新一轮。
+ *
+ * @param ctx - registrant context carrying the agent registry.
+ * @param session - 事件所属会话。
+ * @returns 该会话的 agent；找不到时为 null。
+ */
+function agentForSession(ctx, session) {
+  try {
+    const list = ctx.get('agents')?.list?.() ?? []
+    return list.find(agent => agent?.session === session)
+      ?? list.find(agent => session?.id !== undefined && agent?.session?.id === session.id)
+      ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 构造一条"替用户发出的" `user/message`。
+ *
+ * 语义等价于框架的 `createUserMessage`（`llm/src/message.ts`：`deepFreeze(structuredClone(…))`
+ * + 新 id）。这里手写而不是 import：`@deepseek-ai/dsh-llm` 在 harness 根 node_modules 里
+ * 并不存在，裸导入会解析失败（插件只保证 `@deepseek-ai/dsh-tools` 可解析）。
+ *
+ * `source.kind` 保持 `'user'`：preset 的 `messageSources` 白名单只放行 user/goal，
+ * 换成 plugin 来源可能被过滤出模型表面。
+ *
+ * @returns 冻结的 user 消息。
+ */
+function continueMessage() {
+  return Object.freeze({
+    id: randomUUID(),
+    role: 'user',
+    content: Object.freeze([Object.freeze({ type: 'text', text: CONTINUE_TEXT })]),
+    source: Object.freeze({ kind: 'user' }),
+  })
+}
+
+/**
+ * 一轮因**输出 token 上限**结束时，替用户发一句"继续"，让对话自己走下去。
+ *
+ * 触发条件是 `turn/end` 且 `reason.kind === 'max-tokens'`（DeepSeek 适配器把
+ * `finish_reason: 'length'` 映射成它，且该状态在整轮内"粘住"）。实机里最常见的成因：
+ * 压缩后 preset 把下一个请求的输出预算压到很小的窗口，而 high 推理光思考就用满该预算，
+ * 正文 0 字被判截断（见 docs/design.md §7）。
+ *
+ * 连续次数有上限，避免"截断→续写→又截断"无止境烧 token；任一轮正常结束即清零。
+ *
+ * @param ctx - registrant context carrying the agent registry, logger, and token meter.
+ * @param session - 事件所属会话。
+ * @param event - 已追加的 `turn/end` 事件。
+ * @param options - `maxAutoContinues` 次数上限与 `notice` 是否播报。
+ */
+function continueFor(ctx, session, event, options) {
+  const max = options.maxAutoContinues
+  if (event.data?.reason?.kind !== 'max-tokens') {
+    // 正常结束的一轮：续写额度归还。
+    autoContinues.delete(session)
+    return
+  }
+  const agent = agentForSession(ctx, session)
+  if (agent === null || typeof agent.followup !== 'function') return
+  const used = (autoContinues.get(session) ?? 0) + 1
+  autoContinues.set(session, used)
+  if (used > max) {
+    if (options.notice) {
+      appendNotice(
+        ctx,
+        session,
+        `连续 ${max} 次被输出上限截断，已停止自动续写`,
+        `⚠️ 连续 ${max} 轮都因输出 token 上限被截断，已停止自动续写，避免继续消耗。\n`
+        + '请手动发送"继续"，或调大输出预算（preset 的 `bootstrapMaxTokens`、或模型的 maxTokens）。\n'
+        + '这是一条状态提示，不需要回应。',
+      )
+    }
+    return
+  }
+  // 先离开当前事件派发，再开新一轮，避免在会话观察者回调里重入 driver。
+  setTimeout(() => {
+    try {
+      agent.followup(continueMessage())
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.logger.warn(`compact-agents: auto-continue failed: ${message}`)
+    }
+  }, 0)
+  if (options.notice) {
+    appendNotice(
+      ctx,
+      session,
+      `上一轮被输出上限截断，已自动续写（${used}/${max}）`,
+      `⏩ 上一轮因输出 token 上限被截断，已自动替你发送"继续"（第 ${used}/${max} 次）。\n`
+      + '这是一条状态提示，不需要回应。',
+    )
+  }
+}
+
+/**
+ * 订阅会话追加事件：压缩生命周期在对话区可见，被输出上限截断的轮次自动续写。
  *
  * `session/event` 是提交后同步派发的观察者feed；`compaction/start` 在摘要模型调用之前
  * 追加，所以这里能在"等待模型"那段开始时就提示，而不是等压缩结束。
  *
- * @param ctx - registrant context carrying the session feed and logger.
- * @param enabled - 行配置 `notice: false` 时为 false，整体关闭提示。
+ * @param ctx - registrant context carrying the session feed, agents, and logger.
+ * @param options - `notice` 控制压缩提示，`maxAutoContinues` 控制自动续写次数上限。
  */
-function registerCompactionNotices(ctx, enabled) {
-  if (!enabled) return
-  // 没有事件总线的上下文（例如只做工具注册的最小测试桩）不可能收到会话事件。
+function registerSessionWatch(ctx, options) {
   if (typeof ctx.on !== 'function') return
+  if (!options.notice && options.maxAutoContinues === 0) return
   ctx.on('session/event', (session, event) => {
     const type = event?.type
-    if (type !== 'compaction/start' && type !== 'compaction/summary' && type !== 'compaction/end') return
     try {
-      noticeFor(ctx, session, event)
+      if (options.notice
+        && (type === 'compaction/start' || type === 'compaction/summary' || type === 'compaction/end')) {
+        noticeFor(ctx, session, event)
+      }
+      if (options.maxAutoContinues > 0 && type === 'turn/end') {
+        continueFor(ctx, session, event, options)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      ctx.logger.warn(`compact-agents: compaction notice failed: ${message}`)
+      ctx.logger.warn(`compact-agents: session watch failed: ${message}`)
     }
   })
 }
@@ -414,12 +543,17 @@ function render(value) {
 }
 
 /**
- * Register the `compact_agents` tool and the in-conversation compaction notices.
- * @param ctx - registrant context carrying the tool, compaction, and agent services.
- * @param config - optional row config; `notice: false` turns the notices off.
+ * Register the `compact_agents` tool, the in-conversation compaction notices,
+ * and the auto-continue safety net.
+ * @param ctx - registrant context carrying the tool, compaction, session feed, and agent services.
+ * @param config - optional row config; `notice: false` turns the notices off,
+ *   `maxAutoContinues` (default 2, `0`/`false` off) bounds the automatic "继续" turns.
  */
 export function apply(ctx, config) {
-  registerCompactionNotices(ctx, config?.notice !== false)
+  registerSessionWatch(ctx, {
+    notice: config?.notice !== false,
+    maxAutoContinues: resolveMaxAutoContinues(config),
+  })
   ctx.tools.register(defineTool({
     name: 'compact_agents',
     description: DESCRIPTION_HEAD + DESCRIPTION_TAIL,

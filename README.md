@@ -6,9 +6,9 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · 纯主机侧插件、零网络、零持久化、无客户端 bundle
 
-[![version](https://img.shields.io/badge/version-0.2.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.3.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.2.0**：压缩过程在对话区可见。补上 DSH 缺失的"模型侧手动压缩"入口 —— `/compact` 只服务交互式 UI，headless 的子代理与团队成员没有命令面，队长也没有任何工具能替它们压缩；同时让**自动压缩与手动压缩都在会话里留下可见提示**("正在压缩上下文…"、"约 213,400 → 49,800 tokens")。详见[设计说明](docs/design.md)。
+**v0.3.0**：压缩过程在对话区可见，被输出上限截断时自动续写。补上 DSH 缺失的"模型侧手动压缩"入口 —— `/compact` 只服务交互式 UI，headless 的子代理与团队成员没有命令面，队长也没有任何工具能替它们压缩；同时让**自动压缩与手动压缩都在会话里留下可见提示**("正在压缩上下文…"、"约 213,400 → 49,800 tokens")。详见[设计说明](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -34,6 +34,7 @@
 | 串行调度 | — | 注册为 fail-closed 的 `exclusive`，一次扫描不会和另一个可能压同一会话的调用并行；超时 30 分钟(排队部分不计入，它在 turn 之后跑) |
 | 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
 | **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待 |
+| **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
 
 ## 为什么需要它
 
@@ -197,6 +198,26 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 `compaction/start` 是在摘要模型调用**之前**写入会话日志的，所以第一条提示正好出现在原本那段
 什么都看不见的等待里。行配置 `notice: false` 可关闭(工具不受影响)。
 
+### 被输出上限截断时自动续写
+
+一轮以 `turn/end{reason: {kind: 'max-tokens'}}` 结束时(DeepSeek 的 `finish_reason: 'length'`)，
+插件会**替用户发一句"继续"**，让对话自己走下去，而不是停在那里等人手动发：
+
+```
+▸ 上下文注入 · dsh-compact-agents · 上一轮被输出上限截断，已自动续写（1/2）
+继续                                    ← 插件以用户身份发出的（和用户手打的一样）
+```
+
+- 次数上限由行配置 `maxAutoContinues` 控制，**默认 2**；`0` 或 `false` 关闭。用满后不再续写，
+  改为提示"已停止自动续写"，避免"截断 → 续写 → 又截断"无止境烧 token。
+- **任一轮正常结束即清零**，所以额度是"连续"次数，不会长期耗尽。
+- 发出的是标准 `user/message`（`source.kind: 'user'` + 冻结 + 唯一 id），走的就是人在界面上发消息
+  的同一条路(`agent.followup`)—— 不是往会话表面塞一条不唤醒模型的消息。
+
+> **为什么需要它**：压缩后 preset 常会把**下一个请求的输出预算**压到很小的窗口来"重新锚定"。
+> 若模型开着高推理，思考 token 与正文共享这份预算，很容易整份被思考吃光 → 正文 0 字被判截断。
+> 详见[设计说明 §7](docs/design.md)。
+
 ## 工作原理
 
 对每个目标调用 `ctx.compaction.compactNow(agent, signal)`，然后把结果翻译成报告行。
@@ -223,6 +244,9 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 - **提示会进入会话（含模型上下文）**：它是一条 `user/message`，所以模型下一轮也能看到 —— 这是
   有意的（让模型知道上下文刚被压过）。代价是每次压缩多几十个 token，且下一次压缩会把它一并遮蔽。
   不想要就用 `notice: false` 关掉。
+- **自动续写会以"你"的身份发言**：那条 `继续` 的 `source.kind` 是 `user`，在对话区就是一条普通
+  用户气泡（也有提示行说明是插件自动发的）。这是刻意的 —— 用 plugin 来源可能被 preset 的
+  `messageSources` 白名单过滤出模型表面。不想要就用 `maxAutoContinues: 0` 关掉。
 
 ## 架构
 
@@ -273,6 +297,15 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
 
 ## 更新历史
+
+- **v0.3.0** — 被输出上限截断时自动续写：
+  - 新增**自动续写**：一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"
+    (`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。行配置 `maxAutoContinues`
+    控制连续次数(默认 2，`0`/`false` 关闭)，用满后改为提示，任一轮正常结束即清零；
+  - 实机定位到一个典型诱因并写进[设计说明 §7](docs/design.md)：**压缩后 preset 会把下一个请求的
+    输出预算压到很小的窗口来"重新锚定"**，若模型开着高推理，思考 token 与正文共享该预算，很容易
+    整份被思考吃光 → 正文 0 字被判截断。同一会话日志里 4/4 次截断都出现在 `compaction/end`
+    之后 9~12 条记录，全部 `reasoning=1024/1024`、正文 0 字。
 
 - **v0.2.0** — 压缩过程不再静默：
   - 新增**对话区可见的压缩提示**。原本 `compaction/start` 到 `compaction/end` 之间对话区没有任何节点

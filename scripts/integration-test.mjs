@@ -84,13 +84,27 @@ function fakeSession(id) {
   }
 }
 
-/** 只实现本插件真正调用的注册表读接口。 */
+/** 只实现本插件真正调用的注册表读接口；顺带记录自动续写发出的消息。 */
 class StubAgents extends Service {
   constructor(ctx) {
     super(ctx, 'agents')
     /** 一个假的“顶级会话”和一个假的“子代理”。 */
-    this.rootAgent = { id: 'session-root', session: fakeSession('session-root') }
-    this.childAgent = { id: 'session-child', session: fakeSession('session-child') }
+    this.rootAgent = {
+      id: 'session-root',
+      session: fakeSession('session-root'),
+      followups: [],
+      followup(message) {
+        this.followups.push(message)
+      },
+    }
+    this.childAgent = {
+      id: 'session-child',
+      session: fakeSession('session-child'),
+      followups: [],
+      followup(message) {
+        this.followups.push(message)
+      },
+    }
   }
 
   list() {
@@ -275,6 +289,65 @@ check('notice: false disables the notice', quietSurface.appended.length === 0,
   `${quietSurface.appended.length} append(s)`)
 check('notice: false keeps the tool registered',
   quietCtx.tools.get('compact_agents') !== undefined)
+
+// 10. 被输出上限截断的轮次：自动替用户发"继续"（有次数上限，正常结束即清零）。
+const followups = rootAgent.followups
+const maxTokensEnd = (turn, seq) => ({
+  type: 'turn/end', seq, time: 0, data: { turn, reason: { kind: 'max-tokens' } },
+})
+const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+
+await ctx.emit('session/event', surface, maxTokensEnd(1, 901))
+await settle()
+check('a max-tokens turn end auto-continues once', followups.length === 1,
+  `${followups.length} followup(s)`)
+check('the auto-continue message is a plain user "继续"',
+  followups[0]?.content?.[0]?.text === '继续' && followups[0]?.source?.kind === 'user',
+  JSON.stringify(followups[0]))
+check('the auto-continue message is identified and frozen',
+  Object.isFrozen(followups[0]) && typeof followups[0].id === 'string' && followups[0].id.length > 0
+  && Object.isFrozen(followups[0].content),
+  `frozen=${Object.isFrozen(followups[0])} id=${followups[0]?.id}`)
+check('auto-continue is announced in the conversation',
+  String(noticeAt()?.data?.source?.summary).includes('已自动续写（1/2）'),
+  String(noticeAt()?.data?.source?.summary))
+
+await ctx.emit('session/event', surface, maxTokensEnd(2, 902))
+await settle()
+check('a second consecutive truncation continues again', followups.length === 2,
+  `${followups.length} followup(s)`)
+
+await ctx.emit('session/event', surface, maxTokensEnd(3, 903))
+await settle()
+check('the auto-continue budget stops the loop', followups.length === 2,
+  `${followups.length} followup(s)`)
+check('the exhausted budget is reported',
+  String(noticeAt()?.data?.source?.summary).includes('已停止自动续写'),
+  String(noticeAt()?.data?.source?.summary))
+
+await ctx.emit('session/event', surface, {
+  type: 'turn/end', seq: 904, time: 0, data: { turn: 4, reason: { kind: 'completed' } },
+})
+await ctx.emit('session/event', surface, maxTokensEnd(5, 905))
+await settle()
+check('a completed turn resets the budget',
+  followups.length === 3 && String(noticeAt()?.data?.source?.summary).includes('已自动续写（1/2）'),
+  `${followups.length} followup(s) / ${String(noticeAt()?.data?.source?.summary)}`)
+
+// 11. `maxAutoContinues: 0` 关掉自动续写（提示不受影响）。
+const offCtx = new Context()
+offCtx.plugin(StubSystemPrompt)
+offCtx.plugin(ToolRuntime)
+offCtx.plugin(StubCompaction)
+offCtx.plugin(StubTokenMeter)
+offCtx.plugin(StubAgents)
+offCtx.plugin(plugin, { maxAutoContinues: 0 })
+await new Promise(resolve => setTimeout(resolve, 200))
+const offAgent = offCtx.get('agents').rootAgent
+await offCtx.emit('session/event', offAgent.session, maxTokensEnd(1, 1))
+await settle()
+check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length === 0,
+  `${offAgent.followups.length} followup(s)`)
 
 console.log(failed === 0 ? '\nALL OK' : `\n${failed} failure(s)`)
 process.exit(failed === 0 ? 0 : 1)

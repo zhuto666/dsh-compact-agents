@@ -6,9 +6,9 @@
 
 Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · Host-only plugin: no network, no persistence, no client bundle
 
-[![version](https://img.shields.io/badge/version-0.2.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.3.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.2.0**: compaction is now visible in the conversation. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
+**v0.3.0**: compaction is visible in the conversation, and a turn truncated by the output cap continues itself. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -200,6 +200,29 @@ injections:
 lands exactly inside the wait that used to show nothing. The row config `notice: false` turns it off (the tool
 is unaffected).
 
+### Automatic "continue" when the output cap truncates a turn
+
+When a turn ends with `turn/end{reason: {kind: 'max-tokens'}}` (DeepSeek's `finish_reason: 'length'`), the
+plugin **sends "继续" on the user's behalf** so the conversation keeps going instead of waiting for a human:
+
+```
+▸ Context injection · dsh-compact-agents · previous turn hit the output cap; auto-continued (1/2)
+继续                                    ← sent by the plugin as the user (identical to a typed message)
+```
+
+- The budget is bounded by the row config `maxAutoContinues`, **default 2**; `0` or `false` disables it. Once
+  exhausted it stops and posts a notice instead, so a "truncate → continue → truncate again" loop cannot burn
+  tokens forever.
+- **Any normally completed turn resets it**, so the budget counts *consecutive* truncations.
+- The message is a standard `user/message` (`source.kind: 'user'`, frozen, unique id) delivered through
+  `agent.followup` — the same path a message typed in the UI takes, not a surface append that never wakes the
+  model.
+
+> **Why it is needed**: after a compaction a preset often shrinks the **next request's output budget** to a
+> tiny window in order to re-anchor. When the model runs with high reasoning effort, reasoning tokens share
+> that budget and can consume all of it → zero visible output → the turn is reported as truncated. See
+> [design notes §7](docs/design.md).
+
 ## How it works
 
 For each target it calls `ctx.compaction.compactNow(agent, signal)` and turns the outcome into a report row.
@@ -223,6 +246,10 @@ Details (contract citations, event semantics, pitfalls) are in the [design notes
 - **Zero network**: the only model call is the summarization issued by `compaction-basic` through the host LLM channel; the plugin itself makes no outbound requests.
 - **Does not alter automatic policy**: the threshold and retention ratio belong to `compaction-basic` in the preset; this plugin does not override them.
 - **Removable at any time**: delete the mount row and nothing is left behind.
+- **Auto-continue speaks as you**: the `继续` message uses `source.kind: 'user'`, so it renders as an ordinary
+  user bubble (with a notice row explaining that the plugin sent it). That is deliberate — a `plugin` source
+  could be filtered out of the model surface by a preset's `messageSources` allowlist. Set
+  `maxAutoContinues: 0` to opt out.
 - **The notice enters the session (and therefore the model context)**: it is a `user/message`, so the model
   sees it on the next request — that is deliberate (it tells the model the context was just compacted). It
   costs a few dozen tokens per compaction, and the next compaction shadows it along with everything else.
@@ -277,6 +304,17 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
+
+- **v0.3.0** — auto-continue when the output cap truncates a turn:
+  - A turn ending with `turn/end{reason: 'max-tokens'}` now gets an automatic "继续" sent as the user
+    (`agent.followup` — the same path a typed message takes), so the conversation keeps going. The row config
+    `maxAutoContinues` bounds the consecutive count (default 2; `0`/`false` disables), it reports instead of
+    looping once exhausted, and any normally completed turn resets it;
+  - A concrete real-world trigger is documented in [design notes §7](docs/design.md): **after a compaction a
+    preset may shrink the next request's output budget** to re-anchor, and with high reasoning effort the
+    reasoning tokens share that budget and can consume all of it → zero visible output → truncated turn.
+    4/4 truncations in one session log appeared 9–12 records after `compaction/end`, all with
+    `reasoning=1024/1024` and zero characters of text.
 
 - **v0.2.0** — compaction is no longer silent:
   - A **visible compaction notice in the conversation**. Previously no chat node existed between
