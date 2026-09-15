@@ -34,7 +34,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { liveConfig, registerSettings, resolveMaxAutoContinues } from './settings.js'
+import { currentPresetThreshold, liveConfig, registerSettings, resolveMaxAutoContinues } from './settings.js'
 
 export const name = 'dsh-compact-agents'
 export const inject = ['tools', 'compaction', 'agents']
@@ -130,6 +130,48 @@ function appendNotice(ctx, session, summary, body) {
 }
 
 /**
+ * 本会话这一代际实际生效的压缩触发阈值，以及 preset 文件里现在的值。
+ *
+ * 为什么要报它：压缩参数在**会话建立时**被读进 `compaction-basic`（构造时 `resolveConfig` +
+ * `deepFreeze`），之后改 preset 只对之后新建的会话生效（`agent-presets` 的 standing mount 按
+ * 文件戳换代，已加入的会话保留自己那一代）。于是"我改成 0.5 了，怎么还在 200K 压"是几乎必然
+ * 撞上的困惑 —— 提示里同时给出两个值，用户自己就能看出原因。
+ *
+ * 读不到就返回 null（整句不出现），不让"报诊断"变成新的失败点：
+ * 服务不是那个实现、配置里按模型覆盖了阈值（`modelPolicies`，此时全局值并非实际生效值）都算读不到。
+ *
+ * @param ctx - registrant context carrying the compaction service.
+ * @returns `{ mounted, current, stale }`；`mounted` 为 null 表示读不到。
+ */
+function thresholdState(ctx) {
+  let mounted = null
+  try {
+    const config = ctx.compaction?.config
+    if (config !== undefined && typeof config.thresholdRatio === 'number'
+      && !(Array.isArray(config.modelPolicies) && config.modelPolicies.length > 0)) {
+      mounted = config.thresholdRatio
+    }
+  } catch {
+    mounted = null
+  }
+  if (mounted === null) return null
+  const current = currentPresetThreshold()
+  return { mounted, current, stale: current !== null && current !== mounted }
+}
+
+/** 折叠行上的触发线附注；读不到阈值时为空串。 */
+function thresholdSuffix(state) {
+  return state === null ? '' : ` · 触发线 ×${state.mounted}`
+}
+
+/** "preset 已改、本会话还是旧代际"那句提醒；不需要提醒时为空串。 */
+function staleLine(state) {
+  if (state === null || !state.stale) return ''
+  return `⚠️ preset 文件里现在是 ×${state.current}，本会话仍按 ×${state.mounted}：`
+    + '压缩参数在会话建立时读取，新开一条对话才会用上新值。\n'
+}
+
+/**
  * 把一次压缩事件翻译成对话里的提示。
  * @param ctx - registrant context carrying the token meter and logger.
  * @param session - 事件所属会话。
@@ -140,12 +182,15 @@ function noticeFor(ctx, session, event) {
   if (event.type === 'compaction/start') {
     const before = measureTokens(ctx, session)
     inFlight.set(id, { before })
+    const threshold = thresholdState(ctx)
     appendNotice(
       ctx,
       session,
-      before === null ? '正在压缩上下文…' : `正在压缩上下文…（当前 ${group(before)} tokens）`,
+      (before === null ? '正在压缩上下文…' : `正在压缩上下文…（当前 ${group(before)} tokens）`)
+      + thresholdSuffix(threshold),
       '⏳ 上下文已达压缩阈值，正在压缩上下文。\n'
       + (before === null ? '' : `当前约 ${group(before)} tokens。\n`)
+      + staleLine(threshold)
       + '这是一条状态提示，不需要回应。',
     )
     return
@@ -182,6 +227,7 @@ function noticeFor(ctx, session, event) {
     size === '' ? `上下文压缩完成${detail}` : `上下文压缩完成：${size}${detail}`,
     '✅ 上下文压缩完成。\n'
     + (size === '' ? '' : `${size}${detail}。\n`)
+    + staleLine(thresholdState(ctx))
     + '这是一条状态提示，不需要回应。',
   )
 }

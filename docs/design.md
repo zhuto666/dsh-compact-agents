@@ -149,6 +149,12 @@ session.append('user/message', {
 2. **时序正好**。订阅 `session/event`(提交后同步派发的观察者 feed)，`compaction/start` 是在摘要模型调用**之前**追加的(`packages/compaction/compaction-basic/src/region.ts`，`session.append('compaction/start', lifecycle)` 在 `await summarizeCompaction(...)` 之上)，所以提示覆盖的正是那段静默等待；这一步用 `ctx.tokenMeter.measure(session)` 记下压缩前的估算。
 3. **不会打破压缩**。契约明确允许："Context injected while the summary runs may sit between the marker pair; **only the selected span must remain stable**"(`packages/compaction/compaction/src/index.ts`，`compactNow` 的文档)。我们追加在表面尾部，不触碰被替换的区间，因此不会触发 `assertSelectedSpanStable` 失败。
 
+**提示里还要报"本会话用哪一档阈值"**（v0.6.1 补）。理由是一次几乎必然撞上的困惑：preset 里的压缩参数在**会话建立时**被读进 `compaction-basic`，它在构造时就 `resolveConfig()` 并 `deepFreeze`(`packages/compaction/compaction-basic/src/index.ts:129`)，之后改 preset 只对之后新建的会话生效 —— `agent-presets` 的 standing mount 虽然按文件戳换代，但"already joined"的会话保留自己那一代，且 `select`/`swap` 对已开始的会话直接抛 `agent-preset/locked`(`packages/preset/agent-presets/src/index.ts:735`)。于是"我改成 0.5 了，怎么还在 200K 压"必然发生，而旧提示只报 token 数、看不出用的是哪一档。
+
+- 生效值从 `ctx.compaction.config.thresholdRatio` 读（同一 realm 内就是提供 `ctx.compaction` 的 `compaction-basic` 实例）；**读不到就整句不出现**，不把"报诊断"变成新的失败点。
+- 配置里带 `modelPolicies` 时全局值并非实际生效值，这种情况按"读不到"处理（不猜）。
+- 再读一次 preset 文件里的现值；两者不一致就在提示里写明"preset 现在是 ×A，本会话仍按 ×B，新开一条对话才会用上新值"。读文件是只读的，与 settings 面共用 `readPresetValues`。
+
 > ⚠️ 别把提示挂在 `stability: 'whole-surface'` 的那条路径上：`compactRegion(start, end, agent, signal)` 用整面快照比对(`assertWholeSurfaceUnchanged`)，运行期追加任何表面节点都会让它抛 `SurfaceChangedError`。自动压力路径与 `compactNow` 都是 `selected-span`，安全。
 
 ### 6.4 代价（诚实披露）

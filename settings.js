@@ -290,6 +290,25 @@ export function readPresetValues(files) {
 }
 
 /**
+ * 当前 preset 文件里的压缩触发阈值 —— 用来判断"本会话是不是还在用旧代际"。
+ *
+ * 压缩参数是在**会话建立时**被读进 `compaction-basic` 的（它在构造时 `resolveConfig` 并
+ * `deepFreeze`），之后改 preset 只对之后新建的会话生效（`agent-presets` 的 standing mount
+ * 按文件戳换代，已加入的会话保留它那一代）。于是"我明明改成 0.5 了，怎么还在按 200K 压"
+ * 是几乎必然撞上的一次困惑 —— 提示里主动报出两个值，比让人去翻文档强。
+ *
+ * @returns 文件里的 `thresholdRatio`；读不到时为 null（宁可不报，也不猜）。
+ */
+export function currentPresetThreshold() {
+  try {
+    const { values } = readPresetValues(presetFiles())
+    return typeof values.thresholdRatio === 'number' ? values.thresholdRatio : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * 把 preset 参数写进所有"含对应 row"的 preset 文件。
  *
  * 写前先落一份固定名的备份（`<file>.bak-compact-agents`，只保留最近一次写前的状态），

@@ -14,8 +14,12 @@
  *
  * 运行：node scripts/integration-test.mjs
  */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { setPresetFilesForTest } from '../settings.js'
 import * as plugin from '../index.js'
 
 /** ToolRuntime 构造期需要的最小 systemPrompt 桩。 */
@@ -348,6 +352,37 @@ await offCtx.emit('session/event', offAgent.session, maxTokensEnd(1, 1))
 await settle()
 check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length === 0,
   `${offAgent.followups.length} followup(s)`)
+
+// 12. 压缩提示报出本会话实际生效的触发线；preset 已改、本会话仍是旧代际时点明"新会话生效"。
+// 这正是"我改成 0.5 了怎么还在按 200K 压"那个困惑的现场：压缩参数在会话建立时读进
+// compaction-basic 并深冻结，改 preset 只对之后新建的会话生效。
+{
+  const fixture = path.join(os.tmpdir(), `compact-agents-threshold-${process.pid}.yml`)
+  fs.writeFileSync(fixture, [
+    '- id: compaction',
+    '  name: cordis:group',
+    '  config:',
+    '    - id: compaction-basic',
+    '      config:',
+    '        thresholdRatio: 0.5',
+    '',
+  ].join('\n'))
+  setPresetFilesForTest([fixture])
+  // 本会话那一代建立时文件里还是 0.2 —— 即"preset 改了，会话没换代"。
+  ctx.get('compaction').config = { thresholdRatio: 0.2, modelPolicies: [] }
+  meter.total = 350000
+  await ctx.emit('session/event', surface, {
+    type: 'compaction/start', seq: 910, time: 0, data: { compactionId: 'c10', turn: 10 },
+  })
+  const summary = String(noticeAt()?.data?.source?.summary)
+  const body = String(noticeAt()?.data?.content?.[0]?.text)
+  check('the notice names the trigger line this session actually runs',
+    summary.includes('触发线 ×0.2'), summary)
+  check('a stale generation is called out with both values and the fix',
+    body.includes('×0.5') && body.includes('×0.2') && body.includes('新开一条对话'), body)
+  setPresetFilesForTest(null)
+  delete ctx.get('compaction').config
+}
 
 console.log(failed === 0 ? '\nALL OK' : `\n${failed} failure(s)`)
 process.exit(failed === 0 ? 0 : 1)
