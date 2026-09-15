@@ -41,7 +41,7 @@ class StubSystemPrompt extends Service {
   }
 }
 
-/** 只实现本插件真正调用的 `compactNow`。 */
+/** 只实现本插件真正调用的 `compactNow`；顺带把计量值改小，模拟"压完变小"。 */
 class StubCompaction extends Service {
   constructor(ctx) {
     super(ctx, 'compaction')
@@ -50,6 +50,8 @@ class StubCompaction extends Service {
 
   async compactNow() {
     this.calls += 1
+    const meter = this.ctx.get('tokenMeter')
+    if (meter !== undefined) meter.total = 500
     return {
       shadowedRange: { start: 1, end: 2 },
       shadowedSeqs: [1, 2],
@@ -58,13 +60,37 @@ class StubCompaction extends Service {
   }
 }
 
+/** 只实现本插件真正调用的 `measure`；总数可写，便于制造"压缩前后"。 */
+class StubTokenMeter extends Service {
+  constructor(ctx) {
+    super(ctx, 'tokenMeter')
+    this.total = 1000
+  }
+
+  measure() {
+    return { totalTokens: this.total }
+  }
+}
+
+/** 一个记录了每次 `append` 的假会话，用来断言插件往表面写了什么。 */
+function fakeSession(id) {
+  const appended = []
+  return {
+    id,
+    appended,
+    append(type, data, opts) {
+      appended.push({ type, data, opts })
+    },
+  }
+}
+
 /** 只实现本插件真正调用的注册表读接口。 */
 class StubAgents extends Service {
   constructor(ctx) {
     super(ctx, 'agents')
     /** 一个假的“顶级会话”和一个假的“子代理”。 */
-    this.rootAgent = { id: 'session-root', session: {} }
-    this.childAgent = { id: 'session-child', session: {} }
+    this.rootAgent = { id: 'session-root', session: fakeSession('session-root') }
+    this.childAgent = { id: 'session-child', session: fakeSession('session-child') }
   }
 
   list() {
@@ -91,6 +117,7 @@ const ctx = new Context()
 ctx.plugin(StubSystemPrompt)
 ctx.plugin(ToolRuntime)
 ctx.plugin(StubCompaction)
+ctx.plugin(StubTokenMeter)
 ctx.plugin(StubAgents)
 ctx.plugin(plugin)
 
@@ -125,6 +152,7 @@ check('ToolRuntime wired into systemPrompt', prompt.calls.some(([kind]) => kind 
 
 // 4. 端到端执行一次：真 execute + 真 output schema 校验。
 const rootAgent = ctx.get('agents').rootAgent
+ctx.get('tokenMeter').total = 213400
 const output = await def.execute(
   { scope: 'others', whenBusy: 'skip' },
   { agent: rootAgent, signal: new AbortController().signal, deferContext() {} },
@@ -135,6 +163,9 @@ check('child compacted, caller excluded', output.compacted === 1 && output.reque
 check('row reports real numbers from CompactionResult',
   output.results[0].shadowedNodes === 2 && output.results[0].shadowedTokens === 4242,
   JSON.stringify(output.results[0]))
+check('row reports measured before/after tokens',
+  output.results[0].beforeTokens === 213400 && output.results[0].afterTokens === 500,
+  `before=${output.results[0].beforeTokens} after=${output.results[0].afterTokens}`)
 
 // 5. 渲染块可生成（模型侧真正看到的东西）。
 const blocks = def.output.render({}, output)
@@ -166,6 +197,84 @@ const selfOut = await def.execute(
 )
 check('scope=self while busy queues instead of failing', selfOut.queued === 1,
   JSON.stringify(selfOut.results[0]))
+
+// 8. 压缩提示：`compaction/start` 一落地就能在对话区看到，结束时给出前后对比。
+// 这里直接 `ctx.emit`，等价于 SessionStore 提交后的观察者派发。
+const surface = rootAgent.session
+const meter = ctx.get('tokenMeter')
+const noticeAt = () => surface.appended.at(-1)
+
+meter.total = 213400
+await ctx.emit('session/event', surface, {
+  type: 'compaction/start', seq: 1, time: 0, data: { compactionId: 'c1', turn: 3 },
+})
+const started = noticeAt()
+check('compaction/start appends a visible notice', surface.appended.length === 1,
+  `${surface.appended.length} append(s)`)
+check('notice is a plugin-sourced user message',
+  started?.type === 'user/message' && started.data.role === 'user'
+  && started.data.source?.kind === 'plugin' && started.data.source.plugin === 'dsh-compact-agents',
+  JSON.stringify(started?.data?.source))
+check('notice renders as a notice-form context row',
+  started?.data?.source?.form === 'notice' && typeof started.data.source.summary === 'string',
+  String(started?.data?.source?.form))
+check('running notice carries the pre-compaction size',
+  String(started?.data?.source?.summary).includes('正在压缩上下文')
+  && String(started?.data?.source?.summary).includes('213,400'),
+  String(started?.data?.source?.summary))
+check('notice joins the surface tail', started?.opts?.surfaceOp === 'append',
+  JSON.stringify(started?.opts))
+check('notice carries a non-empty message id (session validation requires one)',
+  typeof started?.data?.id === 'string' && started.data.id.length > 0, String(started?.data?.id))
+
+meter.total = 49800
+await ctx.emit('session/event', surface, {
+  type: 'compaction/summary', seq: 2, time: 0,
+  data: { compactionId: 'c1', shadowedSeqs: [11, 12], shadowedTokenCount: 163600 },
+})
+await ctx.emit('session/event', surface, {
+  type: 'compaction/end', seq: 3, time: 0, data: { compactionId: 'c1', turn: 3 },
+})
+check('compaction/end reports before → after plus the shadowed count',
+  String(noticeAt()?.data?.source?.summary).includes('213,400 → 49,800')
+  && String(noticeAt()?.data?.source?.summary).includes('已遮蔽 2 个历史节点'),
+  String(noticeAt()?.data?.source?.summary))
+
+await ctx.emit('session/event', surface, {
+  type: 'compaction/start', seq: 4, time: 0, data: { compactionId: 'c2', turn: 4 },
+})
+const beforeFailure = surface.appended.length
+await ctx.emit('session/event', surface, {
+  type: 'compaction/end', seq: 5, time: 0,
+  data: { compactionId: 'c2', turn: 4, error: 'summarize failed' },
+})
+check('a failed compaction reports the failure instead of numbers',
+  surface.appended.length === beforeFailure + 1
+  && String(noticeAt()?.data?.source?.summary).includes('未完成'),
+  String(noticeAt()?.data?.source?.summary))
+
+const quietCount = surface.appended.length
+await ctx.emit('session/event', surface, { type: 'assistant/message', seq: 6, time: 0, data: {} })
+check('unrelated session events produce no notice', surface.appended.length === quietCount,
+  `${surface.appended.length} vs ${quietCount}`)
+
+// 9. 行配置 `notice: false` 关掉提示，但工具仍在。
+const quietCtx = new Context()
+quietCtx.plugin(StubSystemPrompt)
+quietCtx.plugin(ToolRuntime)
+quietCtx.plugin(StubCompaction)
+quietCtx.plugin(StubTokenMeter)
+quietCtx.plugin(StubAgents)
+quietCtx.plugin(plugin, { notice: false })
+await new Promise(resolve => setTimeout(resolve, 200))
+const quietSurface = quietCtx.get('agents').rootAgent.session
+await quietCtx.emit('session/event', quietSurface, {
+  type: 'compaction/start', seq: 1, time: 0, data: { compactionId: 'c9', turn: 1 },
+})
+check('notice: false disables the notice', quietSurface.appended.length === 0,
+  `${quietSurface.appended.length} append(s)`)
+check('notice: false keeps the tool registered',
+  quietCtx.tools.get('compact_agents') !== undefined)
 
 console.log(failed === 0 ? '\nALL OK' : `\n${failed} failure(s)`)
 process.exit(failed === 0 ? 0 : 1)

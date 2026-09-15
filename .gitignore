@@ -7,3 +7,6 @@ node_modules/
 # 本地实验/临时目录。
 .testlab/
 .DS_Store
+
+# 编辑器产物（可能含本机路径）。
+.idea/

@@ -6,9 +6,9 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · 纯主机侧插件、零网络、零持久化、无客户端 bundle
 
-[![version](https://img.shields.io/badge/version-0.1.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.2.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.1.0**：首个版本。补上 DSH 缺失的"模型侧手动压缩"入口 —— `/compact` 只服务交互式 UI，headless 的子代理与团队成员没有命令面，队长也没有任何工具能替它们压缩。详见[设计说明](docs/design.md)。
+**v0.2.0**：压缩过程在对话区可见。补上 DSH 缺失的"模型侧手动压缩"入口 —— `/compact` 只服务交互式 UI，headless 的子代理与团队成员没有命令面，队长也没有任何工具能替它们压缩；同时让**自动压缩与手动压缩都在会话里留下可见提示**("正在压缩上下文…"、"约 213,400 → 49,800 tokens")。详见[设计说明](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -33,6 +33,7 @@
 | 越权保护 | — | 只有**顶层 agent** 能扫描他人；子代理只能 `scope: "self"`，成员无法互压或压队长 |
 | 串行调度 | — | 注册为 fail-closed 的 `exclusive`，一次扫描不会和另一个可能压同一会话的调用并行；超时 30 分钟(排队部分不计入，它在 turn 之后跑) |
 | 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；建议 0.2~0.3，即 200K~300K 触发) |
+| **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待 |
 
 ## 为什么需要它
 
@@ -175,11 +176,26 @@ compact_agents(scope = "others" | "all" | "self" | "ids", ids?: string[], whenBu
 
 ```
 compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
-- sess_ab12: compacted, ~182340 tokens in 96 nodes — shadowed surface 12-107
-- sess_cd34: compacted, ~45120 tokens in 31 nodes — shadowed surface 3-33
-- sess_ef56: noop — nothing safely compactable (empty session, or one oversized retained unit)
+- sess_ab12: compacted, ~213,400 → ~49,800 tokens — shadowed surface 12-107
+- sess_cd34: compacted, ~52,100 → ~9,040 tokens — shadowed surface 3-33
+- sess_ef56: noop, ~0 tokens shadowed — nothing safely compactable (empty session, or one oversized retained unit)
 - sess_gh78: queued — mid-turn; queued and will be compacted as soon as it goes idle
 ```
+
+`beforeTokens` / `afterTokens` 是压缩前后用 `ctx.tokenMeter` 实测的表面估算；测不到时为 `-1`。
+
+### 对话区的压缩提示
+
+工具之外，**任何**压缩(包括阈值触发的自动压缩)都会在对话区留下一条可见提示 —— 形态就是框架自己
+注入上下文时用的那种折叠行：
+
+```
+▸ 上下文注入 · dsh-compact-agents · 正在压缩上下文…（当前 213,400 tokens）
+▸ 上下文注入 · dsh-compact-agents · 上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点
+```
+
+`compaction/start` 是在摘要模型调用**之前**写入会话日志的，所以第一条提示正好出现在原本那段
+什么都看不见的等待里。行配置 `notice: false` 可关闭(工具不受影响)。
 
 ## 工作原理
 
@@ -204,6 +220,9 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 - **零网络**：只有一次摘要模型调用(由 `compaction-basic` 经宿主 LLM 通道发出)，插件本身不出站。
 - **不改变自动策略**：`compaction-basic` 的阈值与保留比例由 preset 决定，本插件不覆盖。
 - **可在任何时候卸载**：移除挂载行即可，不留残留状态。
+- **提示会进入会话（含模型上下文）**：它是一条 `user/message`，所以模型下一轮也能看到 —— 这是
+  有意的（让模型知道上下文刚被压过）。代价是每次压缩多几十个 token，且下一次压缩会把它一并遮蔽。
+  不想要就用 `notice: false` 关掉。
 
 ## 架构
 
@@ -254,6 +273,14 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
 
 ## 更新历史
+
+- **v0.2.0** — 压缩过程不再静默：
+  - 新增**对话区可见的压缩提示**。原本 `compaction/start` 到 `compaction/end` 之间对话区没有任何节点
+    —— 自带自动压缩也一样(只有"轨迹"面板显示 `正在压缩上下文…`)—— 观感就是卡住。现在插件订阅
+    `session/event`，在生命周期两端各追加一条插件来源的 `user/message`，渲染形态与框架自己的
+    "上下文注入"完全一致，可用行配置 `notice: false` 关闭；
+  - 工具回执补上**压缩前后 token 数**：`beforeTokens` / `afterTokens`(`-1` 表示计量服务不可用)，
+    渲染成 `~213,400 → ~49,800 tokens`。
 
 - **v0.1.0** — 首个版本：`compact_agents` 工具(4 种 scope、忙则排队)、一键安装/卸载/校验脚本、四层验证(自检 / 行为测试 / 真机集成测试 / preset 校验)。
   - 安装脚本支持**失效路径自愈**(项目移动/改名后重跑即修正)与 `--force` 重新指向；

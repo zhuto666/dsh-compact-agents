@@ -6,9 +6,9 @@
 
 Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · Host-only plugin: no network, no persistence, no client bundle
 
-[![version](https://img.shields.io/badge/version-0.1.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.2.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.1.0**: first release. It supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them. See the [design notes](docs/design.md).
+**v0.2.0**: compaction is now visible in the conversation. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -33,6 +33,7 @@ Force compaction ignoring the automatic threshold · Covers **every live session
 | Overreach protection | — | Only a **top-level** agent may sweep others; a sub-agent may only use `scope: "self"`, so members cannot compact each other or their captain |
 | Serial scheduling | — | Registered as fail-closed `exclusive`: one sweep never runs alongside another call that might compact the same session. Timeout 30 minutes (queued work runs after the turn and is not covered by it) |
 | Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; 0.2–0.3, i.e. 200K–300K, is recommended) |
+| **Compaction is visible in the conversation** | on by default; `notice: false` turns it off | Subscribes to `session/event`: the moment `compaction/start` lands, one plugin-sourced `user/message` is appended to the surface tail, and the client renders it as a collapsed "Context injection · dsh-compact-agents" row — *Compacting context… (currently 213,400 tokens)* while running, *Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed* when done. `compaction/start` is written **before** the summarization model call, so the notice covers exactly the wait that used to look frozen |
 
 ## Why it is needed
 
@@ -175,11 +176,29 @@ One row is returned per target, for example:
 
 ```
 compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
-- sess_ab12: compacted, ~182340 tokens in 96 nodes — shadowed surface 12-107
-- sess_cd34: compacted, ~45120 tokens in 31 nodes — shadowed surface 3-33
-- sess_ef56: noop — nothing safely compactable (empty session, or one oversized retained unit)
+- sess_ab12: compacted, ~213,400 → ~49,800 tokens — shadowed surface 12-107
+- sess_cd34: compacted, ~52,100 → ~9,040 tokens — shadowed surface 3-33
+- sess_ef56: noop, ~0 tokens shadowed — nothing safely compactable (empty session, or one oversized retained unit)
 - sess_gh78: queued — mid-turn; queued and will be compacted as soon as it goes idle
 ```
+
+`beforeTokens` / `afterTokens` are the surface estimates measured with `ctx.tokenMeter` before and after the
+compaction; `-1` means the meter was unavailable.
+
+### The compaction notice in the conversation
+
+Beyond the tool, **every** compaction — including the threshold-triggered automatic one — leaves a visible
+notice in the conversation, in the same collapsed-row shape the framework uses for its own context
+injections:
+
+```
+▸ Context injection · dsh-compact-agents · Compacting context… (currently 213,400 tokens)
+▸ Context injection · dsh-compact-agents · Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed
+```
+
+`compaction/start` is written to the session log **before** the summarization model call, so the first notice
+lands exactly inside the wait that used to show nothing. The row config `notice: false` turns it off (the tool
+is unaffected).
 
 ## How it works
 
@@ -204,6 +223,10 @@ Details (contract citations, event semantics, pitfalls) are in the [design notes
 - **Zero network**: the only model call is the summarization issued by `compaction-basic` through the host LLM channel; the plugin itself makes no outbound requests.
 - **Does not alter automatic policy**: the threshold and retention ratio belong to `compaction-basic` in the preset; this plugin does not override them.
 - **Removable at any time**: delete the mount row and nothing is left behind.
+- **The notice enters the session (and therefore the model context)**: it is a `user/message`, so the model
+  sees it on the next request — that is deliberate (it tells the model the context was just compacted). It
+  costs a few dozen tokens per compaction, and the next compaction shadows it along with everything else.
+  Set `notice: false` to opt out.
 
 ## Architecture
 
@@ -254,6 +277,16 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
+
+- **v0.2.0** — compaction is no longer silent:
+  - A **visible compaction notice in the conversation**. Previously no chat node existed between
+    `compaction/start` and `compaction/end` — the built-in automatic compaction behaves the same way
+    (`正在压缩上下文…` appears only in the trajectory panel) — so it simply looked stuck. The plugin now
+    subscribes to `session/event` and appends one plugin-sourced `user/message` at each end of the
+    lifecycle, in exactly the shape the framework uses for its own context injections, and the row
+    config `notice: false` disables it;
+  - Tool rows now carry **before/after token counts** (`beforeTokens` / `afterTokens`; `-1` when the
+    meter is unavailable), rendered as `~213,400 → ~49,800 tokens`.
 
 - **v0.1.0** — first release: the `compact_agents` tool (four scopes, queue-when-busy), one-shot install/uninstall/validate scripts, and four verification layers (self-check / behaviour test / real-machine integration test / preset validation).
   - The installer repairs a **stale plugin path** (move or rename the project, re-run, done) and supports `--force` to repoint;

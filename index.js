@@ -19,12 +19,20 @@
  * `agent/status → idle`，等它这一轮结束立刻补压。这正是"主会话也能生效"的实现方式：
  * 调用者自己永远 busy（它正在执行这个工具），所以它的压缩必然发生在本轮结束之后。
  *
+ * 压缩过程本身也不再静默：默认订阅 `session/event`，`compaction/start` 一落地就往会话尾
+ * 追加一条插件来源的 `user/message`，客户端把它渲染成「上下文注入 · dsh-compact-agents」
+ * 折叠行 —— 压缩中显示"正在压缩上下文…（当前 N tokens）"，结束后显示
+ * "上下文压缩完成：约 A → B tokens，已遮蔽 N 个历史节点"。`compaction/start` 是在摘要模型
+ * 调用**之前**追加的，所以这条提示正好盖住原本那段什么都看不见的等待。
+ * 行配置 `notice: false` 可整体关闭它。
+ *
  * 放置位置：本文件必须在能解析 `@deepseek-ai/*` 的地方（见 README 的 junction 说明），
  * preset 用绝对路径引用它。
  *
  * @module dsh-compact-agents
  */
 
+import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export const name = 'dsh-compact-agents'
@@ -38,6 +46,163 @@ const WHEN_BUSY = ['queue', 'skip']
 
 /** 已排队等待 idle 的 agent id，避免重复排。 */
 const scheduled = new Set()
+
+/** 提示的插件身份；客户端据此把消息渲染成「上下文注入」折叠行。 */
+const NOTICE_PLUGIN = 'dsh-compact-agents'
+
+/** 折叠行摘要的字数上限，与框架的 `CONTEXT_SUMMARY_MAX_CHARS` 对齐。 */
+const SUMMARY_MAX_CHARS = 120
+
+/** 进行中的压缩：compactionId -> { before }（压缩前测得的 token 数，测不到为 null）。 */
+const inFlight = new Map()
+
+/** 已收到摘要、还没收到结束标记的压缩：compactionId -> { nodes, tokens }。 */
+const summaries = new Map()
+
+/**
+ * 千分位格式化 token 数。
+ * @param value - token 数。
+ * @returns 形如 `213,400` 的字符串。
+ */
+function group(value) {
+  return value.toLocaleString('en-US')
+}
+
+/**
+ * 读一个会话当前的表面 token 估算。
+ * @param ctx - registrant context carrying the token meter.
+ * @param session - 要测量的会话。
+ * @returns 估算总量；计量服务缺席或测量失败时为 null。
+ */
+function measureTokens(ctx, session) {
+  try {
+    const measurement = ctx.get('tokenMeter')?.measure?.(session)
+    const total = measurement?.totalTokens
+    return typeof total === 'number' && Number.isFinite(total) ? total : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 往会话表面追加一条**对话区可见**的提示。
+ *
+ * 走的是框架自己注入"上下文注入"的那条通路：一条 `user/message` + `source.kind === 'plugin'`。
+ * 客户端对这类消息渲染成折叠行「上下文注入 · dsh-compact-agents · <摘要>」，
+ * 不会伪装成用户气泡；`form: 'notice'` + `summary` 让折叠态就带一行结论。
+ *
+ * 压缩契约明确允许在摘要期间注入：`compactNow` 的文档写着 "Context injected while the
+ * summary runs may sit between the marker pair; only the selected span must remain stable"。
+ * 追加在表面尾部，不触碰被替换的区间，因此不会触发稳定性校验失败。
+ *
+ * @param ctx - registrant context carrying the logger.
+ * @param session - 目标会话。
+ * @param summary - 折叠行上显示的一行摘要。
+ * @param body - 展开后的正文。
+ */
+function appendNotice(ctx, session, summary, body) {
+  const bounded = summary.length <= SUMMARY_MAX_CHARS
+    ? summary
+    : `${summary.slice(0, SUMMARY_MAX_CHARS - 1)}…`
+  try {
+    session.append('user/message', {
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: body }],
+      source: {
+        kind: 'plugin',
+        plugin: NOTICE_PLUGIN,
+        form: 'notice',
+        summary: bounded,
+      },
+    }, { surfaceOp: 'append' })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ctx.logger.warn(`compact-agents: could not append a compaction notice: ${message}`)
+  }
+}
+
+/**
+ * 把一次压缩事件翻译成对话里的提示。
+ * @param ctx - registrant context carrying the token meter and logger.
+ * @param session - 事件所属会话。
+ * @param event - 已追加的 `compaction/start | summary | end` 事件。
+ */
+function noticeFor(ctx, session, event) {
+  const id = String(event.data.compactionId)
+  if (event.type === 'compaction/start') {
+    const before = measureTokens(ctx, session)
+    inFlight.set(id, { before })
+    appendNotice(
+      ctx,
+      session,
+      before === null ? '正在压缩上下文…' : `正在压缩上下文…（当前 ${group(before)} tokens）`,
+      '⏳ 上下文已达压缩阈值，正在压缩上下文。\n'
+      + (before === null ? '' : `当前约 ${group(before)} tokens。\n`)
+      + '这是一条状态提示，不需要回应。',
+    )
+    return
+  }
+  if (event.type === 'compaction/summary') {
+    summaries.set(id, {
+      nodes: Array.isArray(event.data.shadowedSeqs) ? event.data.shadowedSeqs.length : null,
+      tokens: typeof event.data.shadowedTokenCount === 'number' ? event.data.shadowedTokenCount : null,
+    })
+    return
+  }
+  const before = inFlight.get(id)?.before ?? null
+  inFlight.delete(id)
+  const stat = summaries.get(id) ?? { nodes: null, tokens: null }
+  summaries.delete(id)
+  const failure = typeof event.data.error === 'string' && event.data.error !== '' ? event.data.error : null
+  if (failure !== null) {
+    appendNotice(
+      ctx,
+      session,
+      '上下文压缩未完成',
+      `⚠️ 上下文压缩未完成：${failure}\n这是一条状态提示，不需要回应。`,
+    )
+    return
+  }
+  const after = measureTokens(ctx, session)
+  const detail = stat.nodes === null ? '' : `，已遮蔽 ${stat.nodes} 个历史节点`
+  const size = before !== null && after !== null
+    ? `约 ${group(before)} → ${group(after)} tokens`
+    : stat.tokens === null ? '' : `已遮蔽约 ${group(stat.tokens)} tokens`
+  appendNotice(
+    ctx,
+    session,
+    size === '' ? `上下文压缩完成${detail}` : `上下文压缩完成：${size}${detail}`,
+    '✅ 上下文压缩完成。\n'
+    + (size === '' ? '' : `${size}${detail}。\n`)
+    + '这是一条状态提示，不需要回应。',
+  )
+}
+
+/**
+ * 订阅会话追加事件，让压缩生命周期在对话区可见。
+ *
+ * `session/event` 是提交后同步派发的观察者feed；`compaction/start` 在摘要模型调用之前
+ * 追加，所以这里能在"等待模型"那段开始时就提示，而不是等压缩结束。
+ *
+ * @param ctx - registrant context carrying the session feed and logger.
+ * @param enabled - 行配置 `notice: false` 时为 false，整体关闭提示。
+ */
+function registerCompactionNotices(ctx, enabled) {
+  if (!enabled) return
+  // 没有事件总线的上下文（例如只做工具注册的最小测试桩）不可能收到会话事件。
+  if (typeof ctx.on !== 'function') return
+  ctx.on('session/event', (session, event) => {
+    const type = event?.type
+    if (type !== 'compaction/start' && type !== 'compaction/summary' && type !== 'compaction/end') return
+    try {
+      noticeFor(ctx, session, event)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.logger.warn(`compact-agents: compaction notice failed: ${message}`)
+    }
+  })
+}
 
 const DESCRIPTION_HEAD =
   'Compress the conversation context NOW. Call this tool immediately whenever the user asks to '
@@ -137,14 +302,18 @@ function scheduleWhenIdle(ctx, agent) {
  */
 async function compactOne(ctx, agent, signal, whenBusy) {
   const id = String(agent.id)
+  const before = measureTokens(ctx, agent.session)
   try {
     const result = await ctx.compaction.compactNow(agent, signal)
+    const after = measureTokens(ctx, agent.session)
     if (result === null) {
       return {
         id,
         status: 'noop',
         shadowedNodes: 0,
         shadowedTokens: 0,
+        beforeTokens: before ?? -1,
+        afterTokens: after ?? -1,
         detail: 'nothing safely compactable (empty session, or one oversized retained unit)',
       }
     }
@@ -153,6 +322,8 @@ async function compactOne(ctx, agent, signal, whenBusy) {
       status: 'compacted',
       shadowedNodes: result.shadowedSeqs.length,
       shadowedTokens: result.shadowedTokenCount,
+      beforeTokens: before ?? -1,
+      afterTokens: after ?? -1,
       detail: `shadowed surface ${String(result.shadowedRange.start)}-${String(result.shadowedRange.end)}`,
     }
   } catch (error) {
@@ -167,6 +338,8 @@ async function compactOne(ctx, agent, signal, whenBusy) {
         status: 'queued',
         shadowedNodes: 0,
         shadowedTokens: 0,
+        beforeTokens: before ?? -1,
+        afterTokens: -1,
         detail: queued
           ? 'mid-turn; queued and will be compacted as soon as it goes idle'
           : 'mid-turn; already queued by an earlier call',
@@ -178,6 +351,8 @@ async function compactOne(ctx, agent, signal, whenBusy) {
         status: 'busy',
         shadowedNodes: 0,
         shadowedTokens: 0,
+        beforeTokens: before ?? -1,
+        afterTokens: -1,
         detail: 'mid-turn; manual compaction needs an idle session (whenBusy: "skip")',
       }
     }
@@ -186,6 +361,8 @@ async function compactOne(ctx, agent, signal, whenBusy) {
       status: 'error',
       shadowedNodes: 0,
       shadowedTokens: 0,
+      beforeTokens: before ?? -1,
+      afterTokens: -1,
       detail: `${code === '' ? 'error' : code}: ${message}`,
     }
   }
@@ -222,7 +399,12 @@ function render(value) {
     + `${value.skipped} skipped, ${value.failed} failed (of ${value.requested} selected).`,
   ]
   for (const row of value.results) {
-    const size = row.status === 'compacted' ? `, ~${row.shadowedTokens} tokens in ${row.shadowedNodes} nodes` : ''
+    const measured = row.beforeTokens >= 0 && row.afterTokens >= 0
+      ? `~${group(row.beforeTokens)} → ~${group(row.afterTokens)} tokens`
+      : `~${group(row.shadowedTokens)} tokens shadowed`
+    const size = row.status === 'compacted' || row.status === 'noop'
+      ? `, ${measured}`
+      : ''
     lines.push(`- ${row.id}: ${row.status}${size} — ${row.detail}`)
   }
   if (value.missingIds.length > 0) {
@@ -232,10 +414,12 @@ function render(value) {
 }
 
 /**
- * Register the `compact_agents` tool.
+ * Register the `compact_agents` tool and the in-conversation compaction notices.
  * @param ctx - registrant context carrying the tool, compaction, and agent services.
+ * @param config - optional row config; `notice: false` turns the notices off.
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
+  registerCompactionNotices(ctx, config?.notice !== false)
   ctx.tools.register(defineTool({
     name: 'compact_agents',
     description: DESCRIPTION_HEAD + DESCRIPTION_TAIL,
@@ -291,6 +475,9 @@ export function apply(ctx) {
                 },
                 shadowedNodes: { type: 'integer', required: true },
                 shadowedTokens: { type: 'integer', required: true },
+                // -1 表示计量服务测不到（例如没有 tokenMeter）。
+                beforeTokens: { type: 'integer', required: true },
+                afterTokens: { type: 'integer', required: true },
                 detail: { type: 'string', required: true },
               },
             },
