@@ -281,6 +281,91 @@ Why two different effect timings:
 
 > `settings: false` turns the whole Settings surface off (the tool and the notices are unaffected).
 
+### What each parameter actually controls
+
+The table above only says *what a field means*. This section says **what the parameter actually governs, and
+what happens when you turn it up or down**. For the design rationale behind it, see
+[design notes §9](docs/design.md).
+
+First, what one compaction looks like end to end (1M window ≈ 1,000,000 tokens, preset using `0.2` / `0.05`):
+
+```
+Before   system prompt 10K + history 190K = 200K
+         └─ hits the thresholdRatio 0.2 trigger line → compaction starts
+
+During   everything outside "the most recent 50K" is 【masked】
+         └─ not deleted but removed from what is sent, and replaced by a summary;
+            the "masked node count" reported in the compaction notice is exactly this
+
+After    system prompt 10K + summary 3K + recent verbatim 50K ≈ 63K
+         └─ that "recent 50K" comes from retainRatio 0.05 × window 1M
+
+Then     the 【controlled phase】 begins: from now on each request may output
+         at most bootstrapMaxTokens tokens
+```
+
+The three numbers each govern one segment, with no overlap: `thresholdRatio` governs **when to compact**,
+`retainRatio` governs **how much verbatim history survives**, and `bootstrapMaxTokens` governs **how much the
+model may say in the turns right after a compaction**. None of them governs how good the summary is — that is
+the summarization model's job.
+
+#### Retained ratio `retainRatio`
+
+It is essentially the **fidelity boundary**: content inside the line is kept **verbatim, word for word**;
+outside the line only the summary remains.
+
+- Its unit is a **fraction of the window**, not a message count: `0.05` × 1M = **keep the most recent 50K
+  tokens verbatim**.
+- **Why a block of verbatim text is mandatory**: a summary always loses detail, and the most recent content
+  is exactly what is most likely needed next (code just pasted, a requirement just stated, an error just
+  corrected). If it gets summarized away, you get "it acts as if I never said that".
+- **Symptom of tuning it down**: `0.01` = keep only 10K. A few-hundred-line source file is roughly 10K tokens,
+  so it is summarized away the moment you compact — the model "forgets" it immediately.
+- **Symptom of tuning it up**: `0.2` = keep 200K, so ~250K remains after a compaction and the trigger line is
+  hit again very soon → repeated compaction, repeated interruptions.
+- **Recommendation**: `0.05` is enough for ordinary conversation; **if you often paste large files, raise it to
+  `0.08~0.1`**.
+
+#### Controlled-phase output budget `bootstrapMaxTokens`
+
+It is an **output** budget, not an input budget: for that short stretch after a compaction, it caps **how many
+tokens the model may output per request**.
+
+- **The easiest trap: `max_tokens` also counts reasoning tokens.** So at `1024` the reasoning alone can consume
+  the whole budget and leave zero visible text — showing up as an "empty reply" or a sentence cut off mid-way.
+  (This is in fact one of the reasons this plugin exists: the 4 truncations observed earlier were all
+  `outputTokens=1024` with 0 characters of visible text.)
+- **Why "controlled" at all**: right after a compaction the model holds a brand-new summary and will happily
+  write a long essay, **refilling** the space that was just freed — making the compaction pointless. So the
+  preset pushes the session back into the controlled phase **after every compaction** and clamps the output;
+  once the session is "promoted" (released from the controlled phase) the model's own large budget returns.
+  **It is a temporary throttle after a compaction, not a permanent setting.**
+- **Tuning it down**: `16384 → 1024` saves tokens but truncates very easily.
+- **Tuning it up**: `32768` rarely truncates, but every controlled-phase turn can be expensive.
+- **It works together with auto-continue**: too small a budget → the reply is truncated → auto-continue sends
+  "continue" to finish the thought, so what you see is **sawtooth output** (half a sentence → automatic
+  continue → the rest). `16384` is the compromise.
+- **Recommendation**: if replies often stop mid-sentence or come back empty, raise it to `32768`; if the turns
+  right after a compaction are absurdly long, keep `16384` or lower.
+
+#### Cheat sheet
+
+| What you want | What to change |
+|---|---|
+| Cheaper and faster | lower the threshold (compact earlier) + lower the retained ratio |
+| Fewer interruptions, remember what was just said | raise the retained ratio (`0.08~0.1`) |
+| Controlled phase keeps truncating (repeated auto-continue) | raise the output budget (`32768`) |
+| Compaction is too frequent, tired of it always summarizing | raise the threshold (`0.3~0.4`) |
+
+#### Effect timing and restoring defaults
+
+- The first three (compaction trigger ratio, retained ratio, controlled-phase output budget) are **written into
+  the preset files**, so they **only affect sessions created afterwards**; already-running sessions are
+  unaffected.
+- The last two (compaction notices, auto-continue budget) belong to this plugin, so they **apply immediately**.
+- **To restore defaults**: the `Reset` button next to each field goes back to the value in the preset;
+  `thresholdRatio` set to `0.8` is the DSH factory value (roughly equivalent to never triggering).
+
 ## How it works
 
 For each target it calls `ctx.compaction.compactNow(agent, signal)` and turns the outcome into a report row.
