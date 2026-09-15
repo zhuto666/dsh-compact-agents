@@ -8,6 +8,7 @@
  *   node scripts/install.mjs --dsh /path/to/deepseek-harness
  *   node scripts/install.mjs --preset <agent.cordis.yml> [--preset ...]
  *   node scripts/install.mjs --dry-run                    # 只报告将要做什么
+ *   node scripts/install.mjs --profile web                # 指定 profile（默认 web）
  *
  * 为什么需要这些步骤：见 README 的「安装」与「架构」两节。
  * @module scripts/install
@@ -18,13 +19,14 @@ import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets
 
 /** 解析命令行参数（比另两个脚本多一个 `--dsh`）。 */
 function parseArgs(argv) {
-  const options = { dsh: process.env.DSH_CHECKOUT, presets: [], dryRun: false, force: false }
+  const options = { dsh: process.env.DSH_CHECKOUT, presets: [], dryRun: false, force: false, profile: process.env.DSH_PROFILE ?? 'web' }
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
     if (token === '--dry-run') options.dryRun = true
     else if (token === '--force') options.force = true
     else if (token === '--dsh') options.dsh = argv[++i]
     else if (token === '--preset') options.presets.push(argv[++i])
+    else if (token === '--profile') options.profile = argv[++i]
     else throw new Error(`install: unknown argument ${token}`)
   }
   return options
@@ -49,6 +51,39 @@ function ensureJunction(linkPath, targetPath, dryRun) {
   fs.mkdirSync(path.dirname(linkPath), { recursive: true })
   fs.symlinkSync(targetPath, linkPath, 'junction')
   return `created  ${label} -> ${targetPath}`
+}
+
+/**
+ * 往一个 profile 的 `dsh.profile.bundles` 里加一个包名。
+ *
+ * 用**行级文本插入**而不是 JSON 反序列化再序列化：后者会把这个文件重排一遍，
+ * 而它可能带着用户自己的排版与（未来的）注释。
+ *
+ * @param manifestPath - profile 的 package.json 路径。
+ * @param packageName - 要登记为 bundle 的包名。
+ * @param dryRun - 只报告时不动盘。
+ * @returns 一行人类可读的结果。
+ */
+function registerProfileBundle(manifestPath, packageName, dryRun) {
+  const label = manifestPath.replace(`${DSH_HOME}${path.sep}`, '')
+  let original
+  try {
+    original = fs.readFileSync(manifestPath, 'utf8')
+  } catch (error) {
+    return `WARN     ${label} 读取失败: ${error.message}`
+  }
+  if (new RegExp(`"${packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`).test(original)) {
+    return `ok       ${label} (bundle already listed)`
+  }
+  const anchor = /("bundles"\s*:\s*\[)(\r?\n)/.exec(original)
+  if (anchor === null) return `WARN     ${label} (找不到 dsh.profile.bundles 数组)`
+  if (dryRun) return `create   ${label} += ${packageName}`
+  const insertAt = anchor.index + anchor[1].length
+  const indent = /\n(\s*)"/.exec(original.slice(anchor.index))?.[1] ?? '   '
+  const next = `${original.slice(0, insertAt)}${anchor[2]}${indent}"${packageName}",${original.slice(insertAt)}`
+  fs.writeFileSync(`${manifestPath}.bak-compact-agents`, original)
+  fs.writeFileSync(manifestPath, next)
+  return `created  ${label} += ${packageName}`
 }
 
 /**
@@ -170,7 +205,27 @@ if (presets.length === 0) {
 }
 for (const file of presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
 
+// ── 宿主组成里的 bundle ──────────────────────────────────────────────────────
+// 浏览器 half（设置页那张卡片）**必须**靠宿主 Loader 的行才能被发现：
+// `ClientModuleRegistry` 只遍历宿主 Loader 的 entries，手动挂载（preset 行）会被直接丢弃。
+// 所以除了 preset 行，本包还要作为 profile 的一个 bundle 出现在宿主组成里。
+console.log('')
+console.log(`profile bundle (${options.profile}):`)
+console.log('  ' + ensureJunction(
+  path.join(DSH_HOME, 'profiles', options.profile, 'node_modules', 'dsh-compact-agents'),
+  PROJECT_ROOT,
+  options.dryRun,
+))
+console.log('  ' + registerProfileBundle(
+  path.join(DSH_HOME, 'profiles', options.profile, 'package.json'),
+  'dsh-compact-agents',
+  options.dryRun,
+))
+
 console.log('')
 console.log('next steps:')
 console.log('  1. node scripts/validate-presets.mjs                   # 确认挂载行与阈值')
-console.log('  2. 新开一条对话（不必重启 dsh）—— 该会话即带上 compact_agents 工具')
+console.log('  2. node scripts/inspect-presets.mjs                    # 设置页会显示哪些初值')
+console.log('  3. 重启 dsh —— 宿主组成变了，插件与浏览器 half 都要重新加载；')
+console.log('     重启后：设置 → 插件 → 可配置 里出现「压缩与自动续写」卡片；')
+console.log('     compact_agents 工具照旧只需新开一条对话（不必重启）。')

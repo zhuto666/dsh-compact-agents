@@ -380,17 +380,43 @@ function applySettings(ctx, next, previous) {
  * 或者 schemastery 联接没建好（旧安装），都只记一条 warn，绝不让插件挂掉。
  * 身份只注册一次 —— 见模块头"注册为什么是进程级一次"。
  *
+ * **服务可能还没就绪**：本包在宿主组成里是一个 bundle 行，它完全可能早于提供 `settings`
+ * 的那一层被 apply（compose 顺序由 profile 的 bundles 顺序决定）。所以这里不是"取一次、
+ * 取不到就算了"，而是用 `ctx.inject` 等它出现 —— 否则表现就是"设置页里什么都没有"，
+ * 且没有任何报错。
+ *
  * @param ctx - registrant context carrying the settings service and logger.
  * @param config - 行配置；`settings: false` 可关掉整个设置面。
  * @returns 注册完成后 resolve；任何一步失败都不会 reject。
  */
-export async function registerSettings(ctx, config) {
-  if (config?.settings === false) return
+export function registerSettings(ctx, config) {
+  if (config?.settings === false) return Promise.resolve()
   if (registeredScope !== null) {
     // 换代复用：把当前值重新灌进本次挂载的 liveConfig（模块级，其实已经是同一份）。
-    applySettings(ctx, registeredScope.get(), undefined)
-    return
+    if (typeof ctx.get === 'function' && ctx.get('settings') !== undefined) {
+      applySettings(ctx, registeredScope.get(), undefined)
+    }
+    return Promise.resolve()
   }
+  // 让 settings 服务到场后再注册；服务被替换时回调会再跑一次，靠上面的缓存幂等。
+  if (typeof ctx.inject === 'function') {
+    return new Promise((resolve) => {
+      ctx.inject(['settings'], (settingsCtx) => {
+        void doRegister(settingsCtx, config).then(resolve, resolve)
+      })
+    })
+  }
+  return doRegister(ctx, config)
+}
+
+/**
+ * 真正执行注册；`registerSettings` 负责"什么时候可以注册"。
+ * @param ctx - context carrying the settings service and logger.
+ * @param config - 行配置。
+ * @returns 注册完成后 resolve；失败只记 warn。
+ */
+async function doRegister(ctx, config) {
+  if (registeredScope !== null) return
   if (typeof ctx.get !== 'function') return
   let provider
   try {

@@ -1,0 +1,15 @@
+# dsh-compact-agents bundle patch —— 往宿主组成里插一行。
+#
+# 为什么需要它（这是 DSH 的硬约束，不是可选优化）：`ClientModuleRegistry` 只遍历
+# **宿主 Loader 的 entries** 来决定把哪些客户端 bundle 下发给浏览器，手动挂载的行
+# （fiber.entry 为空）会被直接丢弃。本插件的主要挂载点在 preset 的 compaction realm 里，
+# 那是手动挂载、永远扫不到，所以浏览器 half 得靠这一行才可能被发现。
+#
+# 这一行只做两件事：让 client-modules 扫到本包的 dsh.client 声明（从而下发 lib/client.js）、
+# 以及在宿主根上注册 settings 命名空间。工具 `compact_agents` 与压缩提示仍由 preset 行负责
+# —— 那一行必须待在 compaction realm 内才解析得到 `ctx.compaction`。
+#
+# 卸载：`node scripts/uninstall.mjs` 会连同 profile 的 dsh.profile.bundles 一起还原。
+- insert:
+    - id: compact-agents-client-host
+      name: 'dsh-compact-agents/client-host'
