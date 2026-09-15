@@ -78,6 +78,15 @@ let appliedPresetValues = null
 /** 仅测试用的 preset 文件清单覆盖；为 null 时用 {@link discoverPresets} 实测发现。 */
 let presetFilesOverride = null
 
+/** {@link currentPresetValues} 的取值缓存：`discoverPresets()` 要扫目录，不能每个会话事件都跑。 */
+let presetValuesCache = null
+
+/** 上面那份缓存的存活时间；够短，手改文件一秒内就会被发现。 */
+const PRESET_VALUES_TTL_MS = 1000
+
+/** 设置界面保存后要通知的监听器（见 {@link onPresetParamsChanged}）。 */
+const presetParamListeners = new Set()
+
 /**
  * 本次要读写的 preset 文件清单。
  * @returns preset 文件路径列表。
@@ -92,6 +101,7 @@ function presetFiles() {
  */
 export function setPresetFilesForTest(files) {
   presetFilesOverride = files
+  presetValuesCache = null
 }
 
 /** `maxAutoContinues` 的默认值：连续截断时最多自动续写两次。 */
@@ -290,21 +300,63 @@ export function readPresetValues(files) {
 }
 
 /**
- * 当前 preset 文件里的压缩触发阈值 —— 用来判断"本会话是不是还在用旧代际"。
+ * 当前 preset 文件里的值 —— 用来判断"本会话是不是还在用旧代际"，也是热同步的目标值。
  *
  * 压缩参数是在**会话建立时**被读进 `compaction-basic` 的（它在构造时 `resolveConfig` 并
  * `deepFreeze`），之后改 preset 只对之后新建的会话生效（`agent-presets` 的 standing mount
- * 按文件戳换代，已加入的会话保留它那一代）。于是"我明明改成 0.5 了，怎么还在按 200K 压"
- * 是几乎必然撞上的一次困惑 —— 提示里主动报出两个值，比让人去翻文档强。
+ * 按文件戳换代，已加入的会话保留它那一代）。本插件用 {@link currentPresetValues} 读到的新值
+ * 热同步进活着的会话，见 `index.js` 的 `syncPresetParams`。
  *
+ * 一秒缓存：会话事件里会频繁问到它，而 `discoverPresets()` 要扫目录 —— 缓存把这件事变成
+ * 一次比较；写盘成功时立刻失效，所以刚保存的值马上能看到。
+ *
+ * @returns 文件里的 preset 参数（读不到就是空对象）。
+ */
+export function currentPresetValues() {
+  const now = Date.now()
+  if (presetValuesCache !== null && now - presetValuesCache.at < PRESET_VALUES_TTL_MS) {
+    return presetValuesCache.values
+  }
+  let values = {}
+  try {
+    values = readPresetValues(presetFiles()).values
+  } catch {
+    values = {}
+  }
+  presetValuesCache = { at: now, values }
+  return values
+}
+
+/**
+ * 当前 preset 文件里的压缩触发阈值。
  * @returns 文件里的 `thresholdRatio`；读不到时为 null（宁可不报，也不猜）。
  */
 export function currentPresetThreshold() {
-  try {
-    const { values } = readPresetValues(presetFiles())
-    return typeof values.thresholdRatio === 'number' ? values.thresholdRatio : null
-  } catch {
-    return null
+  const { thresholdRatio } = currentPresetValues()
+  return typeof thresholdRatio === 'number' ? thresholdRatio : null
+}
+
+/**
+ * 登记一个"preset 参数变了"的监听器（设置界面保存时触发）。
+ *
+ * 用途是热同步：设置卡片把值写进 preset 文件后，活着的会话仍跑着旧代际 —— 本插件借这个回调
+ * 把新值直接写进运行中的 `compaction-basic` 配置（见 `index.js`）。注册方是模块顶层的
+ * `index.js`，因此一个进程只登记一次。
+ *
+ * @param listener - 收到新的 preset 参数时调用；抛错不会影响其他监听器。
+ */
+export function onPresetParamsChanged(listener) {
+  presetParamListeners.add(listener)
+}
+
+/** 通知所有监听器；单个监听器抛错不影响写入结果，也不影响其他监听器。 */
+function notifyPresetParamsChanged(values) {
+  for (const listener of presetParamListeners) {
+    try {
+      listener(values)
+    } catch {
+      // 监听器自己的问题不该让"保存设置"失败。
+    }
   }
 }
 
@@ -383,6 +435,7 @@ function applySettings(ctx, next, previous) {
   }
   if (Object.keys(wanted).length === 0) return
   const report = writePresetValues(wanted, presetFiles())
+  presetValuesCache = null
   appliedPresetValues = { ...appliedPresetValues, ...wanted }
   for (const entry of report) {
     if (entry.status === 'written') ctx.logger.info(`compact-agents: ${entry.file} <- ${entry.detail}`)
@@ -390,6 +443,8 @@ function applySettings(ctx, next, previous) {
       ctx.logger.warn(`compact-agents: preset 写入失败 (${entry.status}): ${entry.file} ${entry.detail}`)
     }
   }
+  // 写盘之后立刻广播：活着的会话跑的还是旧代际，`index.js` 靠这个回调把新值热同步进去。
+  notifyPresetParamsChanged({ ...appliedPresetValues, ...wanted })
 }
 
 /**
@@ -494,6 +549,7 @@ export function resetSettingsStateForTest() {
   registeredScope = null
   registeredBase = null
   appliedPresetValues = null
+  presetValuesCache = null
   liveConfig.notice = null
   liveConfig.maxAutoContinues = null
 }

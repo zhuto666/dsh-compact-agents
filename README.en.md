@@ -33,7 +33,7 @@ Force compaction ignoring the automatic threshold · Covers **every live session
 | Overreach protection | — | Only a **top-level** agent may sweep others; a sub-agent may only use `scope: "self"`, so members cannot compact each other or their captain |
 | Serial scheduling | — | Registered as fail-closed `exclusive`: one sweep never runs alongside another call that might compact the same session. Timeout 30 minutes (queued work runs after the turn and is not covered by it) |
 | Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; the default is 0.35, i.e. 350K) |
-| **Compaction is visible in the conversation** | on by default; `notice: false` turns it off | Subscribes to `session/event`: the moment `compaction/start` lands, one plugin-sourced `user/message` is appended to the surface tail, and the client renders it as a collapsed "Context injection · dsh-compact-agents" row — *Compacting context… (currently 213,400 tokens) · trigger line ×0.2* while running, *Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed* when done. `compaction/start` is written **before** the summarization model call, so the notice covers exactly the wait that used to look frozen. **The notice reports the trigger line this session actually runs**; when the preset files have moved on while the session still runs an older generation, both values and the "a new conversation picks it up" fix are stated right there |
+| **Compaction is visible in the conversation** | on by default; `notice: false` turns it off | Subscribes to `session/event`: the moment `compaction/start` lands, one plugin-sourced `user/message` is appended to the surface tail, and the client renders it as a collapsed "Context injection · dsh-compact-agents" row — *Compacting context… (currently 213,400 tokens) · trigger line ×0.35* while running, *Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed* when done. `compaction/start` is written **before** the summarization model call, so the notice covers exactly the wait that used to look frozen. **The notice reports the trigger line this session actually runs**; if hot-syncing ever fails, both values and the "a new conversation picks it up" fix are stated right there |
 
 ## Why it is needed
 
@@ -121,12 +121,22 @@ What you changed decides how it takes effect:
 | What changed | How it takes effect |
 |---|---|
 | **The host composition** (the bundle row added by the first install, `client-host.js`, `cordis.patch.yml`, the `dsh.*` declarations in `package.json`) | **A `dsh` restart is required** — only then does the card appear in Settings |
-| A preset (the mount row, threshold / retention ratio / controlled output budget) | **A new conversation** is enough; no restart |
+| A preset's **compaction threshold / retention ratio** | **Effective on save**: this plugin hot-syncs the new value into running sessions (the next step boundary uses it) and writes the preset file for new sessions |
+| A preset's **controlled-phase output budget** (`tool-bootstrap`) and the **mount row** | **A new conversation** is enough; no restart |
 | The plugin's own `.js` | **A `dsh` restart is required** (ESM module cache; see "Local development") |
 
 Preset edits hot-reload through the standing mount's **file stamp** (the `stat` `mtimeMs` + `size`): when the stamp changes, the next new session mounts a fresh generation and gets the tool. Sessions that are already composed keep the old generation because `select` / `swap` refuses with `agent-preset/locked`, exactly as designed.
 
-That is also the answer to "I raised the threshold to 0.5, so why is it still compacting at 200K?": **it needs a new conversation, not a restart** (a restart would not help a running session either). To make that visible on the spot, the compaction notice reports the **trigger line this session actually runs**, and when the preset has moved on it states both values plus "a new conversation picks it up".
+**The threshold and retention ratio do not have to wait for that step**: this plugin subscribes to the Settings save event, reads the new preset values and writes them straight into the running `compaction-basic` instance — its `config` is an ordinary own property (the object is frozen, the reference is not), and the pressure check re-reads it on every call, so **the very next step boundary judges against the new threshold**. No new conversation, no restart. `bootstrapMaxTokens` belongs to another plugin (`tool-bootstrap.mjs` captures it in a closure at `apply()`), so it still only applies to new sessions.
+
+The compaction notice reports the **trigger line this session actually runs**; only when hot-syncing genuinely fails (the config shape changed / not writable) does it add a line naming both values and the way out:
+
+```
+⚠️ the preset files now say ×0.5 while this session's instance still runs ×0.2 (hot-sync failed): a new
+conversation is what picks up the new value.
+```
+
+The row config `livePresetParams: false` turns hot-syncing off (back to the old "new sessions only" behaviour).
 
 > **To compact the members you already have, do not restart DSH** — a restart drops every member/sub-agent session (`ctx.agents.list()` only covers live sessions), leaving nothing to compact. Opening a new conversation leaves them untouched.
 >
@@ -229,7 +239,7 @@ notice in the conversation, in the same collapsed-row shape the framework uses f
 injections:
 
 ```
-▸ Context injection · dsh-compact-agents · Compacting context… (currently 213,400 tokens) · trigger line ×0.2
+▸ Context injection · dsh-compact-agents · Compacting context… (currently 213,400 tokens) · trigger line ×0.35
 ▸ Context injection · dsh-compact-agents · Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed
 ```
 
@@ -237,13 +247,13 @@ injections:
 lands exactly inside the wait that used to show nothing. The row config `notice: false` turns it off (the tool
 is unaffected).
 
-The `trigger line ×0.2` at the end of the collapsed row is **the value this session's generation actually runs**.
-If the preset files have since been changed, expanding the row adds one line — the on-the-spot answer to
-"why did my preset edit not take effect?":
+The `trigger line ×0.35` at the end of the collapsed row is **the value this session actually runs**. Normally it
+always matches the preset files — saving the card hot-syncs the new value into running sessions; only when that
+fails does the row add one line:
 
 ```
-⚠️ the preset files now say ×0.5 while this session still runs ×0.2: compaction parameters are read when a
-session is created, so a new conversation is what picks up the new value.
+⚠️ the preset files now say ×0.5 while this session's instance still runs ×0.2 (hot-sync failed): a new
+conversation is what picks up the new value.
 ```
 
 ### Automatic "continue" when the output cap truncates a turn
@@ -513,7 +523,9 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 
 ## Changelog
 
-- **v0.6.1** — the compaction notice now reports the **trigger line this session actually runs** (`· trigger line ×0.2`), and when the preset files have moved on while the session still runs an older generation it states both values plus "a new conversation picks it up". This closes a trap that is bound to be hit once: preset compaction parameters are read into `compaction-basic` at **session creation** and deep-frozen, so later file edits only affect newly created sessions (`agent-preset/locked`) — and the old notice only reported token counts, never which threshold was in force. The Settings card's misleading hint was also reworded to say "default 0.35" explicitly: it used to read "(0.35 = 350K tokens)" right next to a user-set 0.5, which reads like the current value.
+- **v0.7.0** — **the threshold and retention ratio no longer wait for a new conversation**: once the Settings card is saved, the plugin hot-syncs the new values into the running `compaction-basic` instance (its `config` is an ordinary own property — the object is `deepFreeze`d, the reference is replaceable — and the pressure check re-reads it on every call), so the next step boundary judges against the new threshold: existing sessions take effect immediately, with no new conversation and no restart. Only those two knobs are touched: `bootstrapMaxTokens` belongs to `tool-bootstrap`, which captures it in a closure at `apply()`, so it still applies to new sessions only; with `modelPolicies`, only the matching entry changes (the same matching the engine's `resolveTargetPolicy` uses). Every write is read back for verification; when the value cannot be read or written the old behaviour stands and the compaction notice names both values. The row config `livePresetParams: false` disables it. The Settings card therefore gains a "written to the preset and hot-synced" group.
+
+- **v0.6.1** — the compaction notice reports the **trigger line this session actually runs** (`· trigger line ×0.35`), and when hot-syncing fails it states both values plus "a new conversation picks it up". This closes a trap that is bound to be hit once: preset compaction parameters are read into `compaction-basic` at **session creation** and deep-frozen, and the old notice only reported token counts, never which threshold was in force. The Settings card's misleading hint was also reworded to say "default 0.35" explicitly: it used to read "(0.35 = 350K tokens)" right next to a user-set 0.5, which reads like the current value.
 
 - **v0.6.0** — the default compaction trigger ratio moves from `0.2` (200K) to `0.35` (350K): the old default compacted early enough to summarize space that had not been used yet, while `0.35` means "compact when the window is nearly full". Also, the real-preset guard in `compose-test.mjs` no longer hard-codes "`thresholdRatio` must be 0.2" but compares against a byte-for-byte snapshot taken at startup, fixing a false positive once a user tuned the ratio to anything else.
 

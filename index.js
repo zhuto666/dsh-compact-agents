@@ -34,7 +34,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { currentPresetThreshold, liveConfig, registerSettings, resolveMaxAutoContinues } from './settings.js'
+import { currentPresetThreshold, currentPresetValues, liveConfig, onPresetParamsChanged, registerSettings, resolveMaxAutoContinues } from './settings.js'
 
 export const name = 'dsh-compact-agents'
 export const inject = ['tools', 'compaction', 'agents']
@@ -65,6 +65,129 @@ const autoContinues = new Map()
 
 /** 自动续写时替用户发出的那句话。 */
 const CONTINUE_TEXT = '继续'
+
+/**
+ * 本进程里活着的各代际挂载（一个 preset 世代一份）。
+ *
+ * 设置卡片改的是 preset 文件，而活着的会话跑的是**建立时**那一代 —— `compaction-basic` 在构造
+ * 时 `resolveConfig()` 并 `deepFreeze`，此后阈值固定。于是"改了 preset 还得新开一条对话"。
+ * 这里收集每一代的 ctx，就能在保存后把新值**热同步**进每一代运行中的实例（见
+ * {@link syncPresetParams}）：`ctx.compaction.config` 是个普通的自有属性（对象本身被冻结，
+ * 但引用可换），而压力判定每次调用都重新读 `this.config`
+ * （`packages/compaction/compaction-basic/src/index.ts` 的 `compactIfNeeded`），所以换掉它就立刻生效。
+ */
+const liveMounts = new Set()
+
+/**
+ * 一次会话的**路由目标**（provider/model）—— 用来判断 `modelPolicies` 里有没有精确覆盖。
+ *
+ * 与引擎 `resolveTargetPolicy` 同一套匹配：只有 provider 与 model 都相等的那条才算覆盖。
+ *
+ * @param session - 会话（可能没有 requestHeader，例如测试桩）。
+ * @returns `{provider, model}`，取不到时为 null。
+ */
+function routedTargetOf(session) {
+  try {
+    const config = session?.requestHeader?.()?.config
+    if (config === undefined || config === null || config.provider === '' || config.model === '') return null
+    return { provider: config.provider, model: config.model }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 命中的按模型覆盖条目（没有则为 null）。
+ * @param config - `compaction-basic` 的 ResolvedConfig。
+ * @param target - 路由目标。
+ * @returns 精确匹配的策略条目，或 null。
+ */
+function matchingPolicy(config, target) {
+  if (target === null || !Array.isArray(config.modelPolicies)) return null
+  return config.modelPolicies.find(
+    policy => policy?.provider === target.provider && policy?.model === target.model,
+  ) ?? null
+}
+
+/**
+ * 把 preset 里的压缩参数热同步到这一代正在跑的 `compaction-basic` 上。
+ *
+ * 只碰两个旋钮：`thresholdRatio` 与 `retainRatio` —— 它们是 `ResolvedConfig` 的字段，压力判定
+ * 与选段都按调用时的 `this.config` 现算。`bootstrapMaxTokens` 属于另一个 preset 插件
+ * （`tool-bootstrap.mjs` 在 `apply()` 里把它捕获进闭包），改不动，只能等新会话。
+ *
+ * 有按模型覆盖时只改命中那条（引擎的 `resolveTargetPolicy` 就是这么选的）；没有命中就改全局。
+ * 读不到、形状不对、写不进去或写回校验失败都**原样返回**，由压缩提示里的"旧代际"那行兜底说明。
+ *
+ * @param ctx - 某一代的 registrant context。
+ * @param values - 目标值；缺省读 preset 文件（一秒缓存）。
+ * @param target - 本次要同步的路由目标；缺省 null（改全局策略）。
+ * @returns 结果标签，仅用于日志与测试。
+ */
+function syncPresetParams(ctx, values = currentPresetValues(), target = null) {
+  let service
+  try {
+    service = ctx.compaction
+  } catch {
+    return 'no-service'
+  }
+  const config = service?.config
+  if (config === null || typeof config !== 'object') return 'no-config'
+  const override = matchingPolicy(config, target)
+  const scoped = override ?? config
+  const ratio = values.thresholdRatio
+  const retain = values.retainRatio
+  const wantRatio = typeof ratio === 'number' && ratio !== scoped.thresholdRatio ? ratio : undefined
+  const wantRetain = typeof retain === 'number' && retain !== scoped.retainRatio ? retain : undefined
+  if (wantRatio === undefined && wantRetain === undefined) return 'in-sync'
+  const nextScoped = { ...scoped }
+  // 与 settings 面同一套范围；另外守住 `retainRatio < thresholdRatio` 这条引擎自己的不变量。
+  if (wantRatio !== undefined && wantRatio >= 0.05 && wantRatio <= 0.95) nextScoped.thresholdRatio = wantRatio
+  if (wantRetain !== undefined && wantRetain >= 0.01 && wantRetain <= 0.5
+    && wantRetain < nextScoped.thresholdRatio) {
+    nextScoped.retainRatio = wantRetain
+  }
+  if (nextScoped.retainRatio >= nextScoped.thresholdRatio) return 'invariant'
+  if (nextScoped.thresholdRatio === scoped.thresholdRatio
+    && nextScoped.retainRatio === scoped.retainRatio) return 'invariant'
+  const next = override === null
+    ? nextScoped
+    : { ...config, modelPolicies: config.modelPolicies.map(policy => (policy === override ? nextScoped : policy)) }
+  try {
+    service.config = next
+  } catch {
+    return 'readonly'
+  }
+  const applied = matchingPolicy(service.config ?? {}, target) ?? service.config ?? {}
+  if (applied.thresholdRatio !== nextScoped.thresholdRatio
+    || applied.retainRatio !== nextScoped.retainRatio) return 'rejected'
+  const changes = []
+  if (nextScoped.thresholdRatio !== scoped.thresholdRatio) {
+    changes.push(`thresholdRatio ${scoped.thresholdRatio} → ${nextScoped.thresholdRatio}`)
+  }
+  if (nextScoped.retainRatio !== scoped.retainRatio) {
+    changes.push(`retainRatio ${scoped.retainRatio} → ${nextScoped.retainRatio}`)
+  }
+  ctx.logger.info(`compact-agents: 已热同步 preset 参数到正在运行的会话（${changes.join('，')}）`)
+  return 'synced'
+}
+
+/**
+ * 对所有活着的代际做一次热同步。设置界面保存后（`settings.js` 广播）与每次挂载时调用。
+ * @param values - 目标值；缺省读 preset 文件。
+ */
+function syncAllPresetParams(values) {
+  for (const record of liveMounts) {
+    try {
+      syncPresetParams(record.ctx, values)
+    } catch {
+      // 某一代已经拆掉了也不该影响别代。
+    }
+  }
+}
+
+// 只登记一次（模块级）：设置界面写盘成功 → 所有活着的代际立刻吃上新值。
+onPresetParamsChanged(values => syncAllPresetParams(values))
 
 /**
  * 千分位格式化 token 数。
@@ -133,23 +256,24 @@ function appendNotice(ctx, session, summary, body) {
  * 本会话这一代际实际生效的压缩触发阈值，以及 preset 文件里现在的值。
  *
  * 为什么要报它：压缩参数在**会话建立时**被读进 `compaction-basic`（构造时 `resolveConfig` +
- * `deepFreeze`），之后改 preset 只对之后新建的会话生效（`agent-presets` 的 standing mount 按
- * 文件戳换代，已加入的会话保留自己那一代）。于是"我改成 0.5 了，怎么还在 200K 压"是几乎必然
- * 撞上的困惑 —— 提示里同时给出两个值，用户自己就能看出原因。
+ * `deepFreeze`），而"改 preset 要新开一条对话"这件事本身就该被说清楚。本插件会先把新值
+ * **热同步**进去（见 {@link syncPresetParams}），所以正常情况下这里报的就是新值；只有当热同步
+ * 进不去（配置不可写、形状变了）时，才会出现"本会话仍是旧值"的提醒。
  *
- * 读不到就返回 null（整句不出现），不让"报诊断"变成新的失败点：
- * 服务不是那个实现、配置里按模型覆盖了阈值（`modelPolicies`，此时全局值并非实际生效值）都算读不到。
+ * 读不到就返回 null（整句不出现），不让"报诊断"变成新的失败点。
  *
  * @param ctx - registrant context carrying the compaction service.
+ * @param session - 事件所属会话，用来判断 `modelPolicies` 里哪条命中。
  * @returns `{ mounted, current, stale }`；`mounted` 为 null 表示读不到。
  */
-function thresholdState(ctx) {
+function thresholdState(ctx, session) {
   let mounted = null
   try {
     const config = ctx.compaction?.config
-    if (config !== undefined && typeof config.thresholdRatio === 'number'
-      && !(Array.isArray(config.modelPolicies) && config.modelPolicies.length > 0)) {
-      mounted = config.thresholdRatio
+    if (config !== undefined && typeof config === 'object') {
+      const override = matchingPolicy(config, routedTargetOf(session))
+      const ratio = override?.thresholdRatio ?? config.thresholdRatio
+      if (typeof ratio === 'number') mounted = ratio
     }
   } catch {
     mounted = null
@@ -164,11 +288,11 @@ function thresholdSuffix(state) {
   return state === null ? '' : ` · 触发线 ×${state.mounted}`
 }
 
-/** "preset 已改、本会话还是旧代际"那句提醒；不需要提醒时为空串。 */
+/** "preset 已改、热同步又进不去"那句提醒；不需要提醒时为空串。 */
 function staleLine(state) {
   if (state === null || !state.stale) return ''
-  return `⚠️ preset 文件里现在是 ×${state.current}，本会话仍按 ×${state.mounted}：`
-    + '压缩参数在会话建立时读取，新开一条对话才会用上新值。\n'
+  return `⚠️ preset 文件里现在是 ×${state.current}，本会话这个实例仍按 ×${state.mounted}（热同步没成功）：`
+    + '新开一条对话才会用上新值。\n'
 }
 
 /**
@@ -182,7 +306,7 @@ function noticeFor(ctx, session, event) {
   if (event.type === 'compaction/start') {
     const before = measureTokens(ctx, session)
     inFlight.set(id, { before })
-    const threshold = thresholdState(ctx)
+    const threshold = thresholdState(ctx, session)
     appendNotice(
       ctx,
       session,
@@ -227,7 +351,7 @@ function noticeFor(ctx, session, event) {
     size === '' ? `上下文压缩完成${detail}` : `上下文压缩完成：${size}${detail}`,
     '✅ 上下文压缩完成。\n'
     + (size === '' ? '' : `${size}${detail}。\n`)
-    + staleLine(thresholdState(ctx))
+    + staleLine(thresholdState(ctx, session))
     + '这是一条状态提示，不需要回应。',
   )
 }
@@ -352,6 +476,8 @@ function registerSessionWatch(ctx, mount) {
   ctx.on('session/event', (session, event) => {
     const type = event?.type
     try {
+      // 先热同步，再生成提示：这样"旧代际"那行只在真的同步不进去时才出现。
+      if (mount.livePresetParams !== false) syncPresetParams(ctx, currentPresetValues(), routedTargetOf(session))
       const notice = liveConfig.notice ?? mount.notice
       const maxAutoContinues = liveConfig.maxAutoContinues ?? mount.maxAutoContinues
       if (notice
@@ -591,8 +717,15 @@ export function apply(ctx, config) {
   const mount = {
     notice: config?.notice !== false,
     maxAutoContinues: resolveMaxAutoContinues(config),
+    // `livePresetParams: false` 关掉"把 preset 参数热同步给运行中的会话"。
+    livePresetParams: config?.livePresetParams !== false,
   }
+  // 记下这一代：设置界面保存后要能把新值同步进**每一代**正在跑的 `compaction-basic`。
+  const record = { ctx }
+  liveMounts.add(record)
+  if (typeof ctx.on === 'function') ctx.on('dispose', () => liveMounts.delete(record))
   registerSessionWatch(ctx, mount)
+  if (mount.livePresetParams) syncPresetParams(ctx)
   void registerSettings(ctx, config).catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     ctx.logger.warn(`compact-agents: settings registration failed: ${message}`)

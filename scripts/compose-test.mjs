@@ -67,10 +67,11 @@ class StubTools extends Service {
   }
 }
 
-/** `compactNow` 不会被调用，只要服务在场。 */
+/** `compactNow` 不会被调用，只要服务在场；`config` 是给热同步断言用的（形状与 compaction-basic 一致）。 */
 class StubCompaction extends Service {
   constructor(ctx) {
     super(ctx, 'compaction')
+    this.config = { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] }
   }
 }
 
@@ -173,6 +174,10 @@ if (mine !== undefined) {
   const again = ctx.get('settings').describe({ redactSecrets: false }).find(entry => entry.ns === SETTINGS_NAMESPACE)
   check('the updated value is what the UI would show', again?.value?.thresholdRatio === 0.42,
     String(again?.value?.thresholdRatio))
+  // 保存后活着的那一代立刻吃上新值：插件把 preset 参数热同步进运行中的 compaction 实例。
+  check('saving the card hot-syncs the running compaction instance',
+    isolated.get('compaction')?.config?.thresholdRatio === 0.42,
+    JSON.stringify(isolated.get('compaction')?.config))
 }
 
 // 换代复用：同一个进程里再挂一次不应该把注册打崩（真实 register 对重复命名空间会 throw）。

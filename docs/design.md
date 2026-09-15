@@ -149,11 +149,32 @@ session.append('user/message', {
 2. **时序正好**。订阅 `session/event`(提交后同步派发的观察者 feed)，`compaction/start` 是在摘要模型调用**之前**追加的(`packages/compaction/compaction-basic/src/region.ts`，`session.append('compaction/start', lifecycle)` 在 `await summarizeCompaction(...)` 之上)，所以提示覆盖的正是那段静默等待；这一步用 `ctx.tokenMeter.measure(session)` 记下压缩前的估算。
 3. **不会打破压缩**。契约明确允许："Context injected while the summary runs may sit between the marker pair; **only the selected span must remain stable**"(`packages/compaction/compaction/src/index.ts`，`compactNow` 的文档)。我们追加在表面尾部，不触碰被替换的区间，因此不会触发 `assertSelectedSpanStable` 失败。
 
-**提示里还要报"本会话用哪一档阈值"**（v0.6.1 补）。理由是一次几乎必然撞上的困惑：preset 里的压缩参数在**会话建立时**被读进 `compaction-basic`，它在构造时就 `resolveConfig()` 并 `deepFreeze`(`packages/compaction/compaction-basic/src/index.ts:129`)，之后改 preset 只对之后新建的会话生效 —— `agent-presets` 的 standing mount 虽然按文件戳换代，但"already joined"的会话保留自己那一代，且 `select`/`swap` 对已开始的会话直接抛 `agent-preset/locked`(`packages/preset/agent-presets/src/index.ts:735`)。于是"我改成 0.5 了，怎么还在 200K 压"必然发生，而旧提示只报 token 数、看不出用的是哪一档。
+**提示里还报"本会话用哪一档阈值"**（v0.6.1 补）：折叠行末尾带 `· 触发线 ×0.35`，取自 `ctx.compaction.config.thresholdRatio`（`modelPolicies` 命中时取命中那条）；读不到就整句不出现，不把"报诊断"变成新的失败点。正常情况下它总与 preset 文件一致（见 §6.4 的热同步）；只有热同步进不去时，正文才多一行写明两个值与"新开一条对话才会用上新值"。
 
-- 生效值从 `ctx.compaction.config.thresholdRatio` 读（同一 realm 内就是提供 `ctx.compaction` 的 `compaction-basic` 实例）；**读不到就整句不出现**，不把"报诊断"变成新的失败点。
-- 配置里带 `modelPolicies` 时全局值并非实际生效值，这种情况按"读不到"处理（不猜）。
-- 再读一次 preset 文件里的现值；两者不一致就在提示里写明"preset 现在是 ×A，本会话仍按 ×B，新开一条对话才会用上新值"。读文件是只读的，与 settings 面共用 `readPresetValues`。
+### 6.4 阈值热同步：为什么能绕开"新会话生效"
+
+**问题**：preset 里的压缩参数在**会话建立时**被读进 `compaction-basic`，它在构造时就 `resolveConfig()` 并 `deepFreeze`(`packages/compaction/compaction-basic/src/index.ts:129`)，之后改 preset 只对之后新建的会话生效 —— `agent-presets` 的 standing mount 虽然按文件戳换代，但"already joined"的会话保留自己那一代，且 `select`/`swap` 对已开始的会话直接抛 `agent-preset/locked`(`packages/preset/agent-presets/src/index.ts:735`)。于是"我改成 0.5 了，怎么还在按 200K 压"必然发生，正解是新开一条对话 —— 或者，由我们把新值送进去（v0.7.0）。
+
+**做法**：`ctx.compaction.config` 是实例上的**普通自有属性**（`readonly` 只是 TS 层面的；被冻结的是那个对象，不是属性），而压力判定每次调用都重新读它 ——
+
+```js
+// packages/compaction/compaction-basic/src/index.ts
+const policy = resolveTargetPolicy(this.config, target)   // 调用时读，不是构造时缓存
+const spec = resolveCompactSpec(policy, context.contextWindow)
+if (measurement.totalTokens < spec.thresholdTokens) return null
+```
+
+所以把 `service.config` 换成一个新的（未冻结的）对象即可，**下一次步边界就按新阈值判**。触发点有三处，都是本插件已经在的位置：
+
+1. **设置面保存**：`settings.js` 写盘成功后广播 `onPresetParamsChanged` → `syncAllPresetParams()` 遍历本进程里所有活着的代际（模块级 `liveMounts`），逐个同步。多代际覆盖，是因为"活着的会话"可能分散在好几代里。
+2. **每次会话事件**：`registerSessionWatch` 的 handler 先同步、再生成提示 —— 于是手改 preset 文件（不走设置面）也会在下一个事件被捞起来；读文件走 `currentPresetValues()` 的 1 秒缓存，常态成本只是一次比较。
+3. **挂载时**：`apply()` 末尾同步一次，自愈历史遗留的偏差。
+
+**只碰两个旋钮**：`thresholdRatio` 与 `retainRatio` 都在 `ResolvedConfig` 里、且都在调用时被读。`bootstrapMaxTokens` 属于另一个插件（`tool-bootstrap.mjs` 在 `apply()` 里把值捕获进闭包），改不动，仍然只对新会话生效 —— 卡片上它因此单独留在一个"新建会话生效"分组里。
+
+**匹配规则与引擎一致**：`modelPolicies` 里 provider+model 精确命中的那条才是实际生效值，所以命中了就只改那条（连带重建数组），没命中才改全局。命中判断需要路由目标，取自 `session.requestHeader().config`。
+
+**失败即退回，不猜**：配置对象形状不对、属性写不进去、写回后读出来的值不符，都原样返回；此时提示里的"旧代际"那行会说明两个值与出路。行配置 `livePresetParams: false` 整体关闭。风险是明确的：这是**写另一个插件的公开字段**，若将来 `compaction-basic` 改成构造期缓存 spec 或把 `config` 变成 getter，热同步会静默失效 —— 那时提示会立刻显示"改不进去"，用户仍有一条正路（新开对话）。
 
 > ⚠️ 别把提示挂在 `stability: 'whole-surface'` 的那条路径上：`compactRegion(start, end, agent, signal)` 用整面快照比对(`assertWholeSurfaceUnchanged`)，运行期追加任何表面节点都会让它抛 `SurfaceChangedError`。自动压力路径与 `compactNow` 都是 `selected-span`，安全。
 

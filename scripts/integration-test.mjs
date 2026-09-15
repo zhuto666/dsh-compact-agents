@@ -353,9 +353,9 @@ await settle()
 check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length === 0,
   `${offAgent.followups.length} followup(s)`)
 
-// 12. 压缩提示报出本会话实际生效的触发线；preset 已改、本会话仍是旧代际时点明"新会话生效"。
-// 这正是"我改成 0.5 了怎么还在按 200K 压"那个困惑的现场：压缩参数在会话建立时读进
-// compaction-basic 并深冻结，改 preset 只对之后新建的会话生效。
+// 12. preset 参数热同步：活着的会话不必等新会话。
+// 本会话那一代建立时文件里还是 0.2，现在文件已经改成 0.5 —— 插件应当把 0.5 直接写进
+// 运行中的 compaction-basic 配置（`config` 是自有可写属性，压力判定每次调用现读它）。
 {
   const fixture = path.join(os.tmpdir(), `compact-agents-threshold-${process.pid}.yml`)
   fs.writeFileSync(fixture, [
@@ -368,19 +368,50 @@ check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length ==
     '',
   ].join('\n'))
   setPresetFilesForTest([fixture])
-  // 本会话那一代建立时文件里还是 0.2 —— 即"preset 改了，会话没换代"。
-  ctx.get('compaction').config = { thresholdRatio: 0.2, modelPolicies: [] }
+  const compaction = ctx.get('compaction')
+  compaction.config = { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] }
   meter.total = 350000
   await ctx.emit('session/event', surface, {
     type: 'compaction/start', seq: 910, time: 0, data: { compactionId: 'c10', turn: 10 },
   })
+  check('a running session picks up the preset threshold without a new conversation',
+    compaction.config.thresholdRatio === 0.5, JSON.stringify(compaction.config))
   const summary = String(noticeAt()?.data?.source?.summary)
-  const body = String(noticeAt()?.data?.content?.[0]?.text)
-  check('the notice names the trigger line this session actually runs',
-    summary.includes('触发线 ×0.2'), summary)
-  check('a stale generation is called out with both values and the fix',
-    body.includes('×0.5') && body.includes('×0.2') && body.includes('新开一条对话'), body)
+  check('the notice reports the hot-synced trigger line', summary.includes('触发线 ×0.5'), summary)
+  check('a hot-synced session is no longer called stale',
+    !String(noticeAt()?.data?.content?.[0]?.text).includes('preset 文件里现在是'), summary)
+
+  // 有按模型覆盖时，同步的是**命中那条**（引擎的 resolveTargetPolicy 也这么选）。
+  surface.requestHeader = () => ({ config: { provider: 'p', model: 'm' } })
+  compaction.config = {
+    thresholdRatio: 0.2,
+    retainRatio: 0.05,
+    modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 0.2 }],
+  }
+  await ctx.emit('session/event', surface, {
+    type: 'compaction/start', seq: 911, time: 0, data: { compactionId: 'c11', turn: 11 },
+  })
+  check('a per-model override is the entry that gets hot-synced',
+    compaction.config.modelPolicies[0].thresholdRatio === 0.5
+    && compaction.config.thresholdRatio === 0.2,
+    JSON.stringify(compaction.config))
+
+  // 同步不进去时（这里用只读属性模拟引擎形状变化）仍要说清两个值与出路。
+  Object.defineProperty(compaction, 'config', {
+    value: { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] },
+    writable: false,
+    configurable: true,
+  })
+  await ctx.emit('session/event', surface, {
+    type: 'compaction/start', seq: 912, time: 0, data: { compactionId: 'c12', turn: 12 },
+  })
+  const staleBody = String(noticeAt()?.data?.content?.[0]?.text)
+  check('when the value cannot be hot-synced both values and the fix are stated',
+    compaction.config.thresholdRatio === 0.2
+    && staleBody.includes('×0.5') && staleBody.includes('×0.2') && staleBody.includes('新开一条对话'),
+    staleBody)
   setPresetFilesForTest(null)
+  delete surface.requestHeader
   delete ctx.get('compaction').config
 }
 

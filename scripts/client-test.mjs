@@ -461,8 +461,9 @@ const missing = LABELS.filter(label => !readyText.includes(label))
 check('expanded card shows all five field labels', missing.length === 0, `missing: ${missing.join(', ')}`)
 check('expanded card groups the fields by when they take effect (one caption per group)',
   (readyText.match(/立即生效/g) ?? []).length === 1
+  && (readyText.match(/写入 preset 并热同步/g) ?? []).length === 1
   && (readyText.match(/新建会话生效/g) ?? []).length === 1,
-  `立即生效 x${(readyText.match(/立即生效/g) ?? []).length} / 新建会话生效 x${(readyText.match(/新建会话生效/g) ?? []).length}`)
+  `立即生效 x${(readyText.match(/立即生效/g) ?? []).length} / 热同步 x${(readyText.match(/写入 preset 并热同步/g) ?? []).length} / 新建会话生效 x${(readyText.match(/新建会话生效/g) ?? []).length}`)
 check('expanded card renders 保存 / 放弃修改', readyText.includes('保存') && readyText.includes('放弃修改'))
 const readyControls = collectControls(ready.element)
 check('enum fields render as selects (notice + maxAutoContinues)',

@@ -68,13 +68,19 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 |---|---|---|---|
 | `notice` | 本插件 | `liveConfig` | 立即(会话事件监听器实时读) |
 | `maxAutoContinues` | 本插件 | `liveConfig` | 立即 |
-| `thresholdRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | 新会话 |
-| `retainRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | 新会话 |
-| `bootstrapMaxTokens` | 宿主 compaction | preset 的 `tool-bootstrap` 行 | 新会话 |
+| `thresholdRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | **保存即热同步**进运行中的实例；文件供新会话 |
+| `retainRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | 同上 |
+| `bootstrapMaxTokens` | 宿主 tool-bootstrap | preset 的 `tool-bootstrap` 行 | 仅新会话(值在 `apply()` 里被捕获进闭包，改不动) |
 
 优先级三层：**schema 默认 < preset 行配置 < 设置界面(用户层)**。`maxAutoContinues` 默认 2，`0`/`false` 关闭自动续写。
 
 契约：宿主侧的 schema 由 `@deepseek-ai/schemastery` **动态** import 提供(缺了只少一个设置页，不影响工具)；卡片在命名空间未 `ready` 时只渲染一句提示，**任何时候都不许抛异常**(同一棵树里别的卡片会被带崩)。
+
+**阈值与保留比例走"热同步"**：DSH 的既定语义是"已开始的会话不能换 preset"(`agent-preset/locked`)，而 `compaction-basic` 又把配置在构造时 `deepFreeze` —— 于是"改了 preset 要新开对话"。本插件的做法是把 `ctx.compaction.config` 整个换成一个新对象(它是实例上的普通自有属性，冻结的是被指向的对象、不是属性)，因为压力判定每次调用都现读 `this.config`，所以下一次步边界即生效。三条纪律，改动前必读：
+
+- 只同步 `thresholdRatio` / `retainRatio`（都在 `ResolvedConfig` 里、都在调用时读），并守住 `retainRatio < thresholdRatio`；`bootstrapMaxTokens` 不在其中。
+- `modelPolicies` 精确命中 provider+model 时**只改命中那条**（连带重建数组），没命中才改全局 —— 与引擎 `resolveTargetPolicy` 同款。
+- 写完**读回校验**，读不到/写不进/形状不对一律原样返回并保留"旧代际"提示兜底；`livePresetParams: false` 可整体关闭。别把这条路径写成会抛异常的强依赖。
 
 ## 改动生效时机(最容易踩的坑)
 
