@@ -71,7 +71,15 @@ The script does exactly two things, and is **idempotent**:
 
 It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly. A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
 
-**The DSH checkout is auto-detected too — no drive letter is hard-coded anywhere**: the script tries `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS`, then the existing junction target in this project's `node_modules` (one install is enough to record where the checkout lives), then every profile's `node_modules`, then common clone locations under the home directory — and only then fails with a hint to pass `--dsh`.
+**The DSH checkout is auto-detected too — no drive letter is hard-coded in the scripts or the docs.** In order:
+
+1. `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS`;
+2. an existing junction target in this project's `node_modules` (one install is enough to record where the checkout lives);
+3. **the real entry recorded in the `dsh` launcher on `PATH`** (the package manager's shim names where `dsh` lives) — on a fresh clone with no other clue, this is the one that works;
+4. every profile's `node_modules`;
+5. common clone locations under the home directory.
+
+Only when all of them miss does it fail, with a hint to pass `--dsh`.
 
 **That path is not hard-coded — it is computed at install time.** `install.mjs` derives `PLUGIN_ENTRY` from its own location, so:
 
@@ -243,12 +251,14 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **`scope: "self"` is asynchronous**: the tool returns `queued` immediately and the actual compaction happens after the turn ends, with the result written to the DSH log (`ctx.logger.info`) rather than the tool result.
 - **Already-composed sessions do not get the new tool**: a preset edit only affects new sessions; older ones need a new conversation (or a DSH restart, which would drop member sessions).
 - **No orphan-data or state cleanup**: this plugin is stateless, so there is nothing to clean up.
+- **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
 
 - **v0.1.0** — first release: the `compact_agents` tool (four scopes, queue-when-busy), one-shot install/uninstall/validate scripts, and four verification layers (self-check / behaviour test / real-machine integration test / preset validation).
   - The installer repairs a **stale plugin path** (move or rename the project, re-run, done) and supports `--force` to repoint;
-  - DSH checkout discovery is now **self-describing** — neither the scripts nor the docs contain a machine-specific drive letter.
+  - DSH checkout discovery is now **self-describing** (explicit args → existing junction → the `dsh` launcher on `PATH` → profiles → home directory); neither the scripts nor the docs contain a machine-specific drive letter;
+  - `uninstall.mjs` removes only the row **pointing at this project**, so a second clone cannot tear down the first one's install by accident.
 
 ## License
 

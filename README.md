@@ -71,7 +71,15 @@ node scripts/install.mjs               # 确认后执行
 
 自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
 
-**DSH 检出位置同样是自动探测的，脚本里不写死任何盘符**：依次尝试 `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS` → 本项目 `node_modules` 里已有的联接目标(装过一次就连带记下了检出在哪儿) → 各 profile 的 `node_modules` → 家目录下的常见克隆位置；全都落空才报错并提示用 `--dsh` 指定。
+**DSH 检出位置同样是自动探测的，脚本和文档里不写死任何盘符**，依次尝试：
+
+1. `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS`；
+2. 本项目 `node_modules` 里已有的联接目标(装过一次就连带记下了检出在哪儿)；
+3. **PATH 上 `dsh` 启动器的真实入口**(包管理器生成的 shim 里写着 `dsh` 在哪儿)—— 全新克隆、什么线索都没有时，靠的就是这一条；
+4. 各 profile 的 `node_modules`；
+5. 家目录下的常见克隆位置。
+
+全都落空才报错，并提示用 `--dsh` 指定。
 
 **那行路径不是写死的，是安装时算出来的** —— `install.mjs` 用自己所在目录推导 `PLUGIN_ENTRY`，所以：
 
@@ -243,12 +251,14 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **`scope: "self"` 是异步的**：工具立刻返回 `queued`，真正的压缩发生在本轮 turn 结束之后，结果写进 DSH 日志(`ctx.logger.info`)而不是工具返回值；
 - **已 composed 的会话拿不到新工具**：preset 改动只对新会话生效，老会话需新开(或重启 DSH，但那会丢成员会话)；
 - **不做孤儿数据/状态清理**：本插件无状态，无需清理。
+- **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
 
 ## 更新历史
 
 - **v0.1.0** — 首个版本：`compact_agents` 工具(4 种 scope、忙则排队)、一键安装/卸载/校验脚本、四层验证(自检 / 行为测试 / 真机集成测试 / preset 校验)。
   - 安装脚本支持**失效路径自愈**(项目移动/改名后重跑即修正)与 `--force` 重新指向；
-  - DSH 检出位置改为**自描述探测**，脚本与文档中不含任何本机盘符。
+  - DSH 检出位置改为**自描述探测**(显式参数 → 既有联接 → PATH 上的 `dsh` 启动器 → profile → 家目录)，脚本与文档中不含任何本机盘符；
+  - `uninstall.mjs` 只移除**指向本项目**的挂载行，避免克隆两份时误拆别人的安装。
 
 ## License
 

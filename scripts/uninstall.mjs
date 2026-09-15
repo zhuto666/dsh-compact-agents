@@ -11,19 +11,26 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_HOME, PROJECT_ROOT, ROW_ID, discoverPresets, parseCommonArgs } from './lib/presets.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, discoverPresets, parseCommonArgs } from './lib/presets.mjs'
 
 /**
  * 删掉一个 preset 里的挂载行（行本身 + 属于它的续行）。
+ *
+ * 只移除**指向本项目**的那一行：克隆了两份时，从 A 跑 uninstall 不该拆掉 B 的安装。
  * @param file - preset 文件路径。
  * @param dryRun - 只报告时不动盘。
+ * @param force - 该行指向别处时也照样移除。
  * @returns 一行人类可读的结果。
  */
-function unpatchPreset(file, dryRun) {
+function unpatchPreset(file, dryRun, force) {
   const label = file.replace(`${DSH_HOME}${path.sep}`, '')
   const lines = fs.readFileSync(file, 'utf8').split('\n')
   const index = lines.findIndex(line => new RegExp(`^\\s*-\\s*id:\\s*${ROW_ID}\\s*$`).test(line))
   if (index === -1) return `ok       ${label} (no row)`
+  const target = /^\s*name:\s*'?([^'\n]+)'?\s*$/.exec(lines[index + 1] ?? '')?.[1]?.trim()
+  if (target !== undefined && target.replace(/\\/g, '/') !== PLUGIN_ENTRY && !force) {
+    return `SKIP     ${label} (points at ${target}, not this project — --force to remove anyway)`
+  }
   const indent = lines[index].length - lines[index].trimStart().length
   let end = index + 1
   while (end < lines.length) {
@@ -56,13 +63,14 @@ function removeJunction(linkPath, dryRun) {
   return `removed  ${label}`
 }
 
-const options = parseCommonArgs(process.argv.slice(2), 'uninstall')
+const force = process.argv.includes('--force')
+const options = parseCommonArgs(process.argv.slice(2).filter(token => token !== '--force'), 'uninstall')
 const presets = options.presets.length > 0 ? options.presets : discoverPresets()
 
 console.log(`mode: ${options.dryRun ? 'dry-run' : 'apply'}`)
 console.log('')
 console.log(`presets (${presets.length}):`)
-for (const file of presets) console.log('  ' + unpatchPreset(file, options.dryRun))
+for (const file of presets) console.log('  ' + unpatchPreset(file, options.dryRun, force))
 console.log('')
 console.log('junctions:')
 console.log('  ' + removeJunction(path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'), options.dryRun))

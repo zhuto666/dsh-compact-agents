@@ -54,11 +54,44 @@ function walkUpToCheckout(from) {
 }
 
 /**
+ * 从 PATH 上找 `dsh` 启动器，并读出它指向的真实入口。
+ *
+ * 这是全新克隆时**唯一可用**的线索：包管理器生成的 shim 里写着 `dsh` 到底在哪儿，
+ * 所以哪怕本项目还没建任何联接，也能反推出检出位置。shim 是 .cmd/.ps1(Windows)
+ * 或 shell 脚本(POSIX)，文本里带一个绝对的 `.js/.mjs/.cjs` 入口路径。
+ * @returns 入口文件路径列表（可能为空）。
+ */
+function dshLauncherEntries() {
+  const names = process.platform === 'win32'
+    ? ['dsh.cmd', 'dsh.exe', 'dsh.ps1', 'dsh']
+    : ['dsh']
+  const entries = []
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (dir === '') continue
+    for (const name of names) {
+      const shim = path.join(dir, name)
+      if (!fs.existsSync(shim)) continue
+      let text
+      try {
+        text = fs.readFileSync(shim, 'utf8')
+      } catch {
+        continue
+      }
+      // 绝对路径（Windows 盘符或 POSIX 根）且以 JS 扩展名结尾。
+      const match = /(?:[A-Za-z]:[\\/]|\/)[^"'\r\n]*?\.(?:js|mjs|cjs)/.exec(text)
+      if (match !== null) entries.push(match[0])
+    }
+  }
+  return entries
+}
+
+/**
  * 定位 DSH 检出，**不依赖任何本机盘符**。
  *
- * 依次尝试：显式参数 → 本项目 `node_modules` 里既有的联接目标 → 各 profile 的
- * `node_modules` 里的 `@deepseek-ai/dsh-tools` → 家目录下的常见克隆位置。
- * 前两条是"自描述"的：安装过一次之后，联接本身就记录了检出在哪里。
+ * 依次尝试：显式参数 → 本项目 `node_modules` 里既有的联接目标 → PATH 上的 `dsh`
+ * 启动器(全新克隆时唯一有效的一招) → 各 profile 的 `node_modules` → 家目录下的
+ * 常见克隆位置。前几条都是"自描述"的：装过一次之后，联接或启动器本身就记录了
+ * 检出在哪里。
  * @param explicit - `--dsh` 或 `$DSH_CHECKOUT` 给出的路径。
  * @returns 检出根绝对路径。
  * @throws 全部候选都落空时抛出，并提示用 `--dsh` 指定。
@@ -68,6 +101,7 @@ export function resolveDshCheckout(explicit) {
     explicit,
     process.env.DSH_HARNESS,
     path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'),
+    ...dshLauncherEntries(),
   ]
   const profiles = path.join(DSH_HOME, 'profiles')
   if (fs.existsSync(profiles)) {
