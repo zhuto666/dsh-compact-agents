@@ -57,18 +57,22 @@ So "sessions get more expensive the longer they run" used to be solvable only by
 git clone https://github.com/zhuto666/dsh-compact-agents.git
 cd dsh-compact-agents
 node scripts/install.mjs --dry-run     # preview the changes first (touches nothing)
-node scripts/install.mjs               # apply
+node scripts/install.mjs               # apply (profile defaults to web; use --profile to change it)
 ```
 
-The script does exactly two things, and is **idempotent**:
+The script does the following, and is **idempotent**:
 
 1. **Creates three directory junctions** so the plugin can resolve `@deepseek-ai/dsh-tools`, `@deepseek-ai/cordis` and `@deepseek-ai/schemastery` — this project is deliberately **dependency-free** (no `node_modules` install). Node resolves junctions to their real path, so the plugin gets the **same module instance** as the host, with no duplicate-instance hazard.
-2. **Appends one mount row** to the `compaction` isolate group of each preset:
+2. **Appends one mount row** to the `compaction` isolate group of each preset (the `compact_agents` tool, the notices and auto-continue all rely on it):
 
 ```yaml
     - id: compact-agents
       name: '/absolute/path/to/dsh-compact-agents/index.js'   # the installer fills in your real absolute path
 ```
+
+3. **Registers this package in the host composition** (the browser half — the Settings card — relies on it): it creates a `dsh-compact-agents` junction under `<DSH_HOME>/profiles/<profile>/node_modules/` pointing at this repository, and adds `dsh-compact-agents` to that profile's `dsh.profile.bundles` in `package.json` — so the host Loader gains a `compact-agents-client-host` row (injected by this package's `dsh.bundle.patch` → `cordis.patch.yml`, entry `client-host.js`). Pick the profile with `--profile <name>`, default `web`; a `<package.json>.bak-compact-agents` copy is written first.
+
+**Restart `dsh` once after installing**: the host composition changed (the profile gained a bundle), and only after that restart does the card appear under **Settings → Plugins → Configurable**. Afterwards, changing only preset parameters needs no restart (see "Activation").
 
 It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly. A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
 
@@ -95,11 +99,36 @@ node scripts/install.mjs --force      # repoint even when the old path is still 
 
 > **Why can it not simply name a package, like an ordinary dependency?** That is DSH's own semantics, not laziness: a **bare package name in a preset row resolves from the harness installation** (`agent-presets/src/mount.ts`, `PresetTree.import`: *"a package name resolves from the harness base"*), not from the user directory, so a package installed in a workspace or home directory is simply not found. A third-party preset row therefore has exactly two options — an absolute path, or shipping the plugin file inside the preset directory. This project takes the first: **a single source of truth**, with no per-preset copies to drift.
 
+### Why two mount points (host composition + preset)
+
+The two mount points are **both required**; each covers half the job:
+
+| Mount point | Carrier | Responsibility |
+|---|---|---|
+| The preset row | the `compact-agents` row in the `compaction` group of `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` (an absolute path pointing at this repository's `index.js`) | the `compact_agents` tool, the compaction notices, and auto-continue after an output-cap truncation. It **must stay inside the `compaction` realm**: cordis isolation is keyed by service name, so outside the realm `ctx.compaction` cannot be resolved |
+| The bundle row in the host composition | the profile's `dsh.profile.bundles` lists this package → this package's `dsh.bundle.patch` points at `cordis.patch.yml` → it inserts `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'` (entry `client-host.js`) | lets DSH's client module table discover this package's `dsh.client` declaration (and therefore ship `lib/client.js` to the browser), and registers the settings namespace on the host root |
+
+**Mounting it in the preset alone is not enough**: DSH's `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) decides which client bundles reach the browser and it **only walks the host Loader's entries** — its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`, whose comment says outright that a plugin with no `fiber.entry` is a child plugin or a manual mount, and drops it; the constructor likewise only does `for (const entry of ctx.loader.entries())`. The preset row is **manually mounted** by `agent-presets` through `internal.import`, so it is not a loader row. Therefore **with a preset-only install the browser half is never delivered**, and the symptom is that Settings shows neither the namespace nor the card — **with no error at all**. Root cause and source locations: [design notes §8.4](docs/design.md).
+
+`client-host.js`, the root entry, deliberately declares `inject = []`: there is **no** `compaction` service on the host root (it is provided by `compaction-basic` inside the preset realm), so declaring that dependency would only leave the row pending forever. It does exactly two things: let the client module table discover this package, and register the settings namespace on the host root. Both entries call `registerSettings`, and a module-level cache keeps registration process-wide once (the real `SettingsProvider.register` throws on a duplicate namespace).
+
+> This is not an invented shape: the installed third-party plugin `@a9i5k4/dsh-auto-memory` declares the same `dsh.bundle.patch`, `dsh.client` and `exports['./client']`, with a patch body of `- insert: [ { id, name } ]`. This plugin follows the same shape.
+
 ### Activation
 
-**Opening a new conversation is enough — no `dsh` restart required.** Preset edits hot-reload through the standing mount's **file stamp** (the `stat` `mtimeMs` + `size`): when the stamp changes, the next new session mounts a fresh generation and gets the tool. Sessions that are already composed keep the old generation because `select` / `swap` refuses with `agent-preset/locked`, exactly as designed.
+What you changed decides how it takes effect:
+
+| What changed | How it takes effect |
+|---|---|
+| **The host composition** (the bundle row added by the first install, `client-host.js`, `cordis.patch.yml`, the `dsh.*` declarations in `package.json`) | **A `dsh` restart is required** — only then does the card appear in Settings |
+| A preset (the mount row, threshold / retention ratio / controlled output budget) | **A new conversation** is enough; no restart |
+| The plugin's own `.js` | **A `dsh` restart is required** (ESM module cache; see "Local development") |
+
+Preset edits hot-reload through the standing mount's **file stamp** (the `stat` `mtimeMs` + `size`): when the stamp changes, the next new session mounts a fresh generation and gets the tool. Sessions that are already composed keep the old generation because `select` / `swap` refuses with `agent-preset/locked`, exactly as designed.
 
 > **To compact the members you already have, do not restart DSH** — a restart drops every member/sub-agent session (`ctx.agents.list()` only covers live sessions), leaving nothing to compact. Opening a new conversation leaves them untouched.
+>
+> The first install therefore has an ordering conflict: "see the Settings card" and "do not lose member sessions" cannot both hold — compact first and then restart, or restart and re-open the members. The `compact_agents` tool itself does not depend on that restart: once the preset row is in place, a new conversation is enough.
 
 ### Verifying the install
 
@@ -117,15 +146,21 @@ It reports the mount row's location per preset, whether the referenced file exis
 ALL OK (4 preset mounted)
 ```
 
+Which initial values the Settings card will show can be checked read-only (it writes no file at all):
+
+```sh
+node scripts/inspect-presets.mjs
+```
+
 ### Update / uninstall
 
 ```sh
 git -C dsh-compact-agents pull          # update: pull, then re-run install.mjs (idempotent)
 node scripts/uninstall.mjs --dry-run       # uninstall: preview first
-node scripts/uninstall.mjs                 # remove the mount row + delete the junctions it created
+node scripts/uninstall.mjs                 # remove the mount row + the profile bundle entry + the junctions it created
 ```
 
-Uninstall removes only what it added: comments, `!!js` expressions and every other row in a preset are left alone (verified byte-for-byte round trip from installed back to original). The plugin directory and the `.bak` backups are kept; remove them yourself.
+Uninstall removes only what it added: comments, `!!js` expressions and every other row in a preset are left alone (verified byte-for-byte round trip from installed back to original), and the bundle entry in the profile's `package.json` is removed line-wise with the original layout preserved. The plugin directory and the `.bak` / `.bak-compact-agents` backups are kept; remove them yourself. Uninstall changes the host composition too, so **the Settings card disappears only after a `dsh` restart**.
 
 ### Local development
 
@@ -141,7 +176,7 @@ Editing `index.js` **requires a `dsh` restart to take effect** — an easy trap:
 - so "open a new conversation" only re-mounts the **preset**; the plugin module itself is still the copy already cached in the process;
 - the `scripts/*.mjs` files are plain scripts executed fresh each time, so they are **not** affected.
 
-> A new conversation is enough only when you changed `install.mjs` or a preset; **changing the plugin `.js` requires restarting `dsh`**.
+> A new conversation is enough only when you changed **a preset**; **changing the plugin's `.js` (including `client-host.js` / `settings.js`) or anything host-composition related (`cordis.patch.yml`, the `dsh.*` declarations in `package.json`) requires restarting `dsh`**.
 
 ## Usage
 
@@ -237,6 +272,8 @@ Open **Settings → Plugins → Configurable** and you will find a `Compaction &
 
 The card also marks the fields **you have overridden**, each with its own `Reset`.
 
+The card can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that Settings shows neither the namespace nor the card — with no error at all. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md)).
+
 Why two different effect timings:
 
 - The first three values **belong to other preset plugins** (`compaction-basic` owns `thresholdRatio`/`retainRatio`, `tool-bootstrap` owns `bootstrapMaxTokens`). This plugin cannot change their runtime policy, so it writes the **preset files themselves**. A preset mount records a file stamp, and a changed stamp starts the next generation **for sessions created afterwards** — so no DSH restart is needed, but already-running sessions are unaffected. Before writing it keeps a `<preset>.bak-compact-agents` copy and replaces the file atomically (temp file + rename); only the target line changes, so comments and formatting survive.
@@ -266,7 +303,7 @@ Details (contract citations, event semantics, pitfalls) are in the [design notes
 - **Zero persistence**: writes no files, keeps no ledger, changes no configuration; the compaction result is recorded by DSH's own session log.
 - **Zero network**: the only model call is the summarization issued by `compaction-basic` through the host LLM channel; the plugin itself makes no outbound requests.
 - **Does not alter automatic policy**: the threshold and retention ratio belong to `compaction-basic` in the preset; this plugin does not override them.
-- **Removable at any time**: delete the mount row and nothing is left behind.
+- **Removable at any time**: delete the mount row and the bundle entry in the host composition (both are restored by `uninstall.mjs`) and nothing is left behind; a `dsh` restart is needed on the host side as well.
 - **Auto-continue speaks as you**: the `继续` message uses `source.kind: 'user'`, so it renders as an ordinary
   user bubble (with a notice row explaining that the plugin sent it). That is deliberate — a `plugin` source
   could be filtered out of the model surface by a preset's `messageSources` allowlist. Set
@@ -280,22 +317,45 @@ Details (contract citations, event semantics, pitfalls) are in the [design notes
 
 ```
 dsh-compact-agents
-├── index.js                     # the plugin: registers the compact_agents tool (single entry point)
-├── package.json                 # ESM package declaration (main -> index.js)
+├── index.js                     # the preset-row entry: registers the compact_agents tool + session listeners (notices / auto-continue)
+├── client-host.js               # the host-composition entry: does exactly two things (ship the browser half, register the settings namespace)
+├── cordis.patch.yml             # dsh.bundle.patch: inserts the compact-agents-client-host row into the host composition
+├── settings.js                  # the Settings surface: settings namespace + preset parameter read/write (shared by both entries)
+├── lib/client.js                # the browser half: the Settings card (hand-written, no build step)
+├── package.json                 # ESM package declaration (main -> index.js; dsh.client -> lib/client.js; dsh.bundle.patch -> cordis.patch.yml)
 ├── scripts/
-│   ├── lib/presets.mjs          # shared by the three scripts: path constants + preset discovery (one definition)
-│   ├── install.mjs              # one-shot install/repair: junctions + preset row (idempotent, keeps .bak)
-│   ├── uninstall.mjs            # uninstall: remove the mount row + delete the junctions it created
+│   ├── lib/presets.mjs          # shared by the scripts: path constants + preset discovery (one definition)
+│   ├── install.mjs              # one-shot install/repair: junctions + preset row + profile bundle (idempotent, keeps .bak)
+│   ├── uninstall.mjs            # uninstall: remove the mount row + delete the junctions / bundle entry it created
 │   ├── validate-presets.mjs     # validate mount row / threshold / path
+│   ├── inspect-presets.mjs      # read-only self-check: the effective values read from the real presets
+│   ├── compose-test.mjs         # composition check: real FileSettingsProvider + replicated preset isolation (temp fixture only)
+│   ├── settings-test.mjs        # Settings surface test (real schemastery + preset text surgery)
+│   ├── client-test.mjs          # browser half test (fake __ModuleLoader__ + stub require)
 │   ├── integration-test.mjs     # real-machine load test (real Context + real ToolRuntime)
 │   ├── deferred-test.mjs        # queue-then-compact behaviour test (fake ctx)
+│   ├── dryrun-test.mjs          # `--dry-run` guard: a rehearsal never really deletes (sandboxed DSH_HOME)
 │   └── selftest.mjs             # module and defineTool spec self-check
 ├── docs/
 │   └── design.md                # design notes: contract citations, constraints, pitfalls, test matrix
 └── node_modules/@deepseek-ai/   # junctions created by install.mjs (not committed)
-    ├── dsh-tools -> <dsh checkout>/packages/core/tools
-    └── cordis    -> <dsh checkout>/vendor/cordis
+    ├── dsh-tools    -> <dsh checkout>/packages/core/tools
+    ├── cordis       -> <dsh checkout>/vendor/cordis
+    └── schemastery  -> <dsh checkout>/vendor/schemastery
 ```
+
+`install.mjs` additionally creates a junction under that profile, `<DSH_HOME>/profiles/<profile>/node_modules/dsh-compact-agents -> <this repository>`, and registers the package name in the profile's `dsh.profile.bundles` (see below).
+
+**Two mount points, both required**:
+
+| Mount point | How it gets there | Responsibility |
+|---|---|---|
+| The preset row | `install.mjs` appends it to the `compaction` group of `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` | the `compact_agents` tool, the compaction notices, auto-continue. It must stay inside the `compaction` realm, or `ctx.compaction` cannot be resolved |
+| The bundle row in the host composition | `install.mjs --profile`: the profile's `dsh.profile.bundles` lists this package → this package's `dsh.bundle.patch` (`cordis.patch.yml`) inserts `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'` | discovered by `ClientModuleRegistry` (which ships `lib/client.js`), and registers the settings namespace on the host root |
+
+`client-host.js` deliberately declares `inject = []` — there is no `compaction` service on the host root (it is provided by `compaction-basic` inside the preset realm), so declaring that dependency would only leave the row pending forever. It does exactly two things: let the client module table discover this package, and register the settings namespace on the host root.
+
+**Why the preset alone is not enough**: `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) only walks the **host Loader's entries**, and its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` — a plugin with no `fiber.entry` ("a child plugin or a manual mount") is dropped; the preset row is exactly such a manual mount, created by `agent-presets` through `internal.import`, not a loader row. The result: with a preset-only install the browser half is never delivered, Settings shows neither the namespace nor the card, **and nothing is logged**. See [design notes §8.4](docs/design.md).
 
 The plugin imports `defineTool` (from `@deepseek-ai/dsh-tools`) and **dynamically** imports `@deepseek-ai/schemastery` to declare its settings schema. The latter two junctions are needed only by the Settings surface and the tests; **a missing `schemastery` junction costs you one settings card, never the plugin** (the dynamic import only logs a warning).
 
@@ -308,11 +368,17 @@ node --check index.js                 # syntax check
 node scripts/selftest.mjs             # module import + defineTool spec + parameter enums
 node scripts/deferred-test.mjs        # busy -> queued -> compacted on idle (fake ctx, no DSH)
 node scripts/integration-test.mjs     # real machine: real Context + real ToolRuntime, full chain
+node scripts/compose-test.mjs         # composition: real FileSettingsProvider + replicated preset isolation
+node scripts/inspect-presets.mjs      # read-only: the initial values the Settings card will show
 node scripts/validate-presets.mjs     # mount rows and thresholds of all presets
 node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 ```
 
 `integration-test.mjs` covers what a fake ctx cannot, at **zero model calls and zero cost** (it substitutes three minimal stub services — `systemPrompt`, `compaction`, `agents`): `inject` really resolves, `ctx.tools.register(defineTool(...))` is really accepted by the registry, `ctx.tools.get()` finds the tool, `ctx.tools.executionMode()` really resolves to `exclusive`, an end-to-end `execute()` return value really passes the output schema, `render()` really produces a text block, and a non-top-level sweep really is refused. The full assertion list is in the [design notes](docs/design.md#4-验证矩阵).
+
+`compose-test.mjs` instead uses the **real `FileSettingsProvider` from the checkout** (writing to a temp file) plus a replication of the preset's `isolate` semantics, to prove the settings namespace also registers under the real service and a real isolated realm; it also deliberately **mounts the host-composition row before the `settings` service exists**, proving that the `ctx.inject` wait path really completes registration once the service arrives.
+
+> ⚠️ **Test-isolation lesson**: `compose-test.mjs` walks the real `update → watch → write-back` chain, so it must first point preset reads/writes at a **temp fixture** with `setPresetFilesForTest()` — the first version skipped that step and the "verification" script **actually rewrote the user's preset** (it wrote `thresholdRatio` as `0.42`). It now ends with a guard assertion: **the real preset file is still 0.2**, so any test run that changes it fails immediately (`npm test` runs it; `node scripts/compose-test.mjs` also works standalone). Any test that writes to disk must point its fixture at a temp file explicitly — never rely on "I assumed it would not write".
 
 ## Known limitations
 

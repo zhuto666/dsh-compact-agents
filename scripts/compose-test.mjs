@@ -18,7 +18,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { resolveDshCheckout } from './lib/presets.mjs'
 import { resetSettingsStateForTest, setPresetFilesForTest, SETTINGS_NAMESPACE } from '../settings.js'
@@ -203,6 +203,43 @@ check('a second mount (a new preset generation) does not break registration',
 
 resetSettingsStateForTest()
 setPresetFilesForTest(null)
+
+// 宿主组成那一行的**行名形态**：整个发现链上最容易静默失败的一环。
+// `ClientModuleRegistry.locatePkgJson()` 先算
+//   pathLike = 以 '.' 开头 | 以 'file:' 开头 | 绝对路径
+//   expectedPackageName = pathLike ? undefined : exactPackageSpecifier(loaderName)
+//   if (!pathLike && expectedPackageName === undefined) return undefined
+// 而 exactPackageSpecifier 对含 '/' 的说明符返回 undefined —— 于是子路径行名会在**解析之前**
+// 就被判为非客户端行、静默跳过（组成树里那一行还在、--dump-config 看得见，浏览器却什么都没有）。
+{
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  // 这里断言的是**不变量本身**（行名必须是裸包名），而不是去 import 那个函数：
+  // `packages/client/modules/lib/client.js` 是浏览器侧构建，导入需要整个 window 环境；
+  // 规则以源码为准（`src/client/manifest.ts` 的 `exactPackageSpecifier` + `src/index.ts`
+  // 的 `locatePkgJson` 开头那三行），下面两条断言正对着它的两个分支。
+  const looksPathLike = (name) => name.startsWith('.') || name.startsWith('file:') || path.isAbsolute(name)
+  const isSubpath = (name) => name.includes('/') || name.includes(':')
+
+  // 不引 js-yaml（本仓库无依赖，且补丁文件形状固定）：直接读那一行的 name。
+  const patchText = fs.readFileSync(path.join(projectRoot, 'cordis.patch.yml'), 'utf8')
+  const rowName = /^\s*name:\s*'([^']+)'\s*$/m.exec(patchText)?.[1] ?? ''
+  check('the bundle patch has exactly one insert row', (patchText.match(/^\s*name:/gm) ?? []).length === 1,
+    JSON.stringify(rowName))
+  check('the host row name is not path-like and not a subpath (so locatePkgJson does not bail)',
+    rowName !== '' && !looksPathLike(rowName) && !isSubpath(rowName), rowName)
+  check('a subpath row name would have been rejected by that gate (the exact bug)',
+    isSubpath('dsh-compact-agents/client-host'), 'dsh-compact-agents/client-host')
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
+  const rootExport = manifest.exports?.['.']
+  const rootRel = typeof rootExport === 'string' ? rootExport : rootExport?.default
+  const rootEntry = await import(pathToFileURL(path.join(projectRoot, rootRel)).href)
+  check('exports["."] is the root-safe entry (no compaction dependency)',
+    Array.isArray(rootEntry.inject) && rootEntry.inject.length === 0,
+    `${rootRel} inject=${JSON.stringify(rootEntry.inject)}`)
+  check('the full plugin stays reachable for the preset row (which needs compaction)',
+    Array.isArray(plugin.inject) && plugin.inject.includes('compaction'), JSON.stringify(plugin.inject))
+}
 
 // 守卫：本脚本绝不改写真实 preset（第一版正是漏了这条，把 thresholdRatio 写成了 0.42）。
 const realPresets = (await import('./lib/presets.mjs')).discoverPresets()

@@ -9,7 +9,25 @@
 # 以及在宿主根上注册 settings 命名空间。工具 `compact_agents` 与压缩提示仍由 preset 行负责
 # —— 那一行必须待在 compaction realm 内才解析得到 `ctx.compaction`。
 #
+# ── 行名为什么必须是**裸包名**（踩过的坑，改动前先读） ────────────────────────
+#
+# `ClientModuleRegistry.locatePkgJson()` 开头就是这么判的：
+#
+#   const pathLike = loaderName.startsWith('.') || loaderName.startsWith('file:') || isAbsolute(loaderName)
+#   const expectedPackageName = pathLike ? undefined : exactPackageSpecifier(loaderName)
+#   if (!pathLike && expectedPackageName === undefined) return undefined
+#
+# 而 `exactPackageSpecifier()` 对含 `/` 的说明符一律返回 undefined。所以写成
+# `dsh-compact-agents/client-host` 这种**子路径行名**时，它就在这个 `return` 上原地返回 ——
+# 在任何解析发生之前就判定"这不是客户端行"，本包被静默跳过：没有卡片、没有报错、
+# `--dump-config` 里那一行也明明在，只有浏览器那边什么都没有。
+# 裸包名与绝对路径都合法；这里用裸包名，顺带避免仓库里出现盘符路径。
+#
+# 裸包名解析到 `exports["."]`，而宿主根上**没有** `compaction` 服务，所以那个入口必须
+# root-safe —— 这就是 `client-host.js` 存在的理由（完整插件在 `exports["./plugin"]`，
+# 由 preset 用绝对路径挂载）。
+#
 # 卸载：`node scripts/uninstall.mjs` 会连同 profile 的 dsh.profile.bundles 一起还原。
 - insert:
     - id: compact-agents-client-host
-      name: 'dsh-compact-agents/client-host'
+      name: 'dsh-compact-agents'

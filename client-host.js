@@ -20,6 +20,10 @@
  * 而宿主根上根本没有 `compaction` 服务 —— 所以这里刻意 `inject = []`，不依赖任何服务，
  * 也就不会在根上挂起一个永远 pending 的行。
  *
+ * `exports["."]` 指向本文件（完整插件在 `exports["./plugin"]`）。原因有两个：宿主组成里的
+ * bundle 行只能写**裸包名** —— 子路径行名会被 `locatePkgJson` 在解析前直接判掉（见
+ * `cordis.patch.yml` 里的说明），而裸包名解析的就是 `exports["."]`；preset 行则用绝对文件
+ * 路径挂 `index.js`，不走 `exports`。所以本文件必须是 root-safe 的那一个。
  * 两处都调用 `registerSettings`，靠 `settings.js` 的模块级缓存保证**进程级只注册一次**
  * （真实的 `SettingsProvider.register` 对重复命名空间会直接抛错）。
  *

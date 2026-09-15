@@ -59,18 +59,22 @@ DSH 的手动压缩入口只有一个**人机命令** `/compact`(`@deepseek-ai/d
 git clone https://github.com/zhuto666/dsh-compact-agents.git
 cd dsh-compact-agents
 node scripts/install.mjs --dry-run     # 先预览要改什么(不改盘)
-node scripts/install.mjs               # 确认后执行
+node scripts/install.mjs               # 确认后执行(profile 默认 web，可用 --profile 指定)
 ```
 
-脚本只做两件事，且**幂等**：
+脚本做这几件事，且**幂等**：
 
 1. **建三个目录联接(junction)**，让插件能解析到 `@deepseek-ai/dsh-tools`、`@deepseek-ai/cordis` 与 `@deepseek-ai/schemastery`——本项目**刻意零依赖**(不装 node_modules)，Node 会把 junction 解析到真实路径，因此拿到的是和宿主**同一个模块实例**，没有双实例问题；
-2. **往 preset 的 `compaction` 隔离组里追加一行挂载**：
+2. **往 preset 的 `compaction` 隔离组里追加一行挂载**(`compact_agents` 工具、压缩提示、自动续写都靠它)：
 
 ```yaml
     - id: compact-agents
       name: '/absolute/path/to/dsh-compact-agents/index.js'   # 安装脚本会自动填成你的真实绝对路径
 ```
+
+3. **把本插件登记进宿主组成**(浏览器 half、设置页那张卡片靠它)：在 `<DSH_HOME>/profiles/<profile>/node_modules/` 下建一个指向本仓库的 `dsh-compact-agents` 联接，并把 `dsh-compact-agents` 加进该 profile `package.json` 的 `dsh.profile.bundles` —— 宿主 Loader 于是多出一行 `compact-agents-client-host`(由本包的 `dsh.bundle.patch` → `cordis.patch.yml` 注入，入口 `client-host.js`)。profile 用 `--profile <name>` 指定，默认 `web`；改这个 `package.json` 前会留一份 `<package.json>.bak-compact-agents`。
+
+**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后「设置 → 插件 → 可配置」里才会出现那张卡片。之后只改 preset 里的参数就不必重启(见「生效」)。
 
 自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
 
@@ -97,11 +101,36 @@ node scripts/install.mjs --force      # 旧路径还有效时也强制重新指�
 
 > **为什么不能像普通包那样只写包名？** 这不是偷懒，是 DSH 的既定语义：preset 行里的**裸包名是从 harness 安装位置解析的**(`agent-presets/src/mount.ts` 的 `PresetTree.import` 注释原文 *"a package name resolves from the harness base"*)，不是从用户目录；装在工作区/用户目录的包根本解析不到。所以第三方插件在这里只有两条路——写绝对路径，或把插件文件放进 preset 目录跟着走。本项目选前者：**单一真源**，不给每个 preset 留副本。
 
+### 为什么要挂两处(宿主组成 + preset)
+
+两个挂载点**缺一不可**，各管一半：
+
+| 挂载点 | 载体 | 负责 |
+|---|---|---|
+| preset 行 | `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 里 `compaction` 组的 `compact-agents` 行(绝对路径指向本仓库 `index.js`) | `compact_agents` 工具、压缩进度提示、被输出上限截断后的自动续写。**必须待在 `compaction` realm 内**：cordis 的隔离按服务名生效，realm 外解析不到 `ctx.compaction` |
+| 宿主组成里的 bundle 行 | profile 的 `dsh.profile.bundles` 登记本包 → 本包 `dsh.bundle.patch` 指向 `cordis.patch.yml` → 插入 `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'`(入口 `client-host.js`) | 让 DSH 的客户端模块表扫到本包的 `dsh.client` 声明(从而把 `lib/client.js` 下发给浏览器)，并在宿主根上注册 settings 命名空间 |
+
+**只挂 preset 是不够的**：DSH 的 `ClientModuleRegistry`(`packages/client/modules/src/index.ts`) **只遍历宿主 Loader 的 entries** 来决定给浏览器下发哪些客户端 bundle —— 它监听 `internal/plugin` 的那段里有一行 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`，注释明说"`fiber.entry` 为空的是子插件或手动挂载"，直接丢弃；构造时也只做 `for (const entry of ctx.loader.entries())`。而 preset 里的行是 `agent-presets` 用 `internal.import` **手动挂载**的、不是 loader 行。所以**只挂在 preset 里，浏览器 half 永远不会被下发**，症状是设置页里既没有命名空间也没有卡片、且**毫无报错**。根因与源码位置见[设计说明 §8.4](docs/design.md)。
+
+`client-host.js` 这个根入口刻意 `inject = []`：宿主根上**没有** `compaction` 服务(它由 preset realm 内的 `compaction-basic` 提供)，声明依赖只会让这一行永远 pending。它只做两件事：让客户端模块表扫到本包、在宿主根上注册 settings 命名空间；两处入口都调用 `registerSettings`，靠模块级缓存保证进程级只注册一次(真实的 `SettingsProvider.register` 对重复命名空间会抛错)。
+
+> 这不是自创形态：已装的站外插件 `@a9i5k4/dsh-auto-memory` 同样声明了 `dsh.bundle.patch`、`dsh.client` 与 `exports['./client']`，patch 内容就是 `- insert: [ { id, name } ]`。本插件采用与它相同的形态。
+
 ### 生效
 
-**新开一条对话即可，不必重启 `dsh`。** preset 改动靠 standing mount 的**文件戳热重载**(戳 = `stat` 的 `mtimeMs` + `size`)：戳变了，下一条新会话重新挂载一代，就带上工具；已经 composed 的会话因 `agent-preset/locked` 拿不到，属预期。
+改动落在哪一层，决定它怎么生效：
+
+| 改了什么 | 生效方式 |
+|---|---|
+| **宿主组成**(首次安装新增的 bundle 行、`client-host.js`、`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明) | **必须重启 `dsh`** —— 重启后设置页里才会出现那张卡片 |
+| preset(挂载行、阈值 / 保留比例 / 受控输出预算) | **新开一条对话**即可，不必重启 |
+| 插件本体 `.js` | **必须重启 `dsh`**(ESM 模块缓存，理由见「开发者本地调试」) |
+
+preset 改动靠 standing mount 的**文件戳热重载**(戳 = `stat` 的 `mtimeMs` + `size`)：戳变了，下一条新会话重新挂载一代，就带上工具；已经 composed 的会话因 `agent-preset/locked` 拿不到，属预期。
 
 > **想让现有的成员也被压，就别重启 DSH** —— 重启会丢掉所有成员/子代理会话(`ctx.agents.list()` 只覆盖活着的会话)，那就没东西可压了。新开一条对话不影响它们。
+>
+> 于是首次安装有个次序问题："看到设置卡片"和"别丢成员会话"不能同时满足 —— 先压完再重启，或者重启后重新开成员。`compact_agents` 工具本身不依赖这次重启：preset 行装好，新开一条对话就能用。
 
 ### 校验安装
 
@@ -119,15 +148,21 @@ node scripts/validate-presets.mjs
 ALL OK (4 preset mounted)
 ```
 
+设置页将显示哪些初值，可以用只读脚本核对(一个文件都不写)：
+
+```sh
+node scripts/inspect-presets.mjs
+```
+
 ### 更新 / 卸载
 
 ```sh
 git -C dsh-compact-agents pull          # 更新:拉取后重新执行 install.mjs(幂等)
 node scripts/uninstall.mjs --dry-run       # 卸载:先预览
-node scripts/uninstall.mjs                 # 移除挂载行 + 删除自己建的 junction
+node scripts/uninstall.mjs                 # 移除挂载行 + 摘掉 profile bundle 登记 + 删除自己建的 junction
 ```
 
-卸载只删自己加的东西：preset 的注释、`!!js` 表达式、其它行一律不动(实测安装→卸载后文件**逐字节回到原状**)。插件目录与 `.bak` 备份不删，自行处理。
+卸载只删自己加的东西：preset 的注释、`!!js` 表达式、其它行一律不动(实测安装→卸载后文件**逐字节回到原状**)，profile `package.json` 里的 bundle 登记同样按行摘除、保留原排版。插件目录与 `.bak` / `.bak-compact-agents` 备份不删，自行处理。卸载同样改了宿主组成，所以**重启 `dsh` 后设置卡片才会消失**。
 
 ### 开发者本地调试
 
@@ -143,7 +178,7 @@ node scripts/selftest.mjs            # 模块导入 + defineTool 规格自检
 - 所以"新开一条对话"只会重新挂载 **preset**，插件的模块本身仍是进程里已缓存的旧代码；
 - `scripts/*.mjs` 是每次直接执行的脚本，**不受影响**，改完立即是新的。
 
-> 只有**改了 `install.mjs` 或 preset** 时，新开对话就够了；**改了插件 `.js` 就必须重启 `dsh`**。
+> 只有**改了 preset** 时，新开对话就够了；**改了插件 `.js`(含 `client-host.js` / `settings.js`)或宿主组成相关的文件(`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明)都必须重启 `dsh`**。
 
 ## 用法
 
@@ -233,6 +268,8 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 卡片上还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
 
+卡片能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是设置页里既没有命名空间也没有卡片、且毫无报错。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md)）。
+
 设计要点（为什么分成两种生效时机）：
 
 - 前三个值**属于 preset 里的其它插件**（`compaction-basic` 的 `thresholdRatio`/`retainRatio`、
@@ -266,7 +303,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 - **零持久化**：不写任何文件、不建账本、不改配置；压缩结果由 DSH 自身的会话日志记录。
 - **零网络**：只有一次摘要模型调用(由 `compaction-basic` 经宿主 LLM 通道发出)，插件本身不出站。
 - **不改变自动策略**：`compaction-basic` 的阈值与保留比例由 preset 决定，本插件不覆盖。
-- **可在任何时候卸载**：移除挂载行即可，不留残留状态。
+- **可在任何时候卸载**：删掉挂载行与宿主组成里的 bundle 登记即可（`uninstall.mjs` 两处都还原），不留残留状态；宿主侧同样要重启 `dsh` 才生效。
 - **提示会进入会话（含模型上下文）**：它是一条 `user/message`，所以模型下一轮也能看到 —— 这是
   有意的（让模型知道上下文刚被压过）。代价是每次压缩多几十个 token，且下一次压缩会把它一并遮蔽。
   不想要就用 `notice: false` 关掉。
@@ -278,20 +315,24 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ```
 dsh-compact-agents
-├── index.js                     # 插件本体:注册 compact_agents 工具 + 会话监听(唯一入口)
-├── settings.js                  # 设置面:settings 命名空间 + preset 参数读写
+├── index.js                     # preset 行的入口:注册 compact_agents 工具 + 会话监听(压缩提示/自动续写)
+├── client-host.js               # 宿主组成那一行的入口:只做两件事(下发浏览器 half + 注册设置命名空间)
+├── cordis.patch.yml             # dsh.bundle.patch:往宿主组成里插 compact-agents-client-host 行
+├── settings.js                  # 设置面:settings 命名空间 + preset 参数读写(两个入口共用)
 ├── lib/client.js                # 浏览器 half:设置页里那张卡片(手写,无构建步骤)
-├── package.json                 # ESM 包声明(main → index.js;dsh.client → lib/client.js)
+├── package.json                 # ESM 包声明(main → index.js;dsh.client → lib/client.js;dsh.bundle.patch → cordis.patch.yml)
 ├── scripts/
 │   ├── lib/presets.mjs          # 各脚本共用:路径常量 + preset 发现(只有一处定义)
-│   ├── install.mjs              # 一键安装/修复:junction + preset 行(幂等,带 .bak)
-│   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction
+│   ├── install.mjs              # 一键安装/修复:junction + preset 行 + profile bundle(幂等,带 .bak)
+│   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction / bundle 登记
 │   ├── validate-presets.mjs     # 校验挂载行/阈值/路径
 │   ├── inspect-presets.mjs      # 只读自检:真实 preset 里读到的生效值是多少
+│   ├── compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离(只碰临时夹具)
 │   ├── settings-test.mjs        # 设置面测试(真 schemastery + preset 文本手术)
 │   ├── client-test.mjs          # 浏览器 half 测试(假 __ModuleLoader__ + 桩 require)
 │   ├── integration-test.mjs     # 真机加载测试(真 Context + 真 ToolRuntime)
 │   ├── deferred-test.mjs        # 排队补压行为测试(假 ctx)
+│   ├── dryrun-test.mjs          # `--dry-run` 守卫:预演绝不真删(沙箱 DSH_HOME)
 │   └── selftest.mjs             # 模块与 defineTool 规格自检
 ├── docs/
 │   └── design.md                # 设计说明:契约出处、约束、踩过的坑、测试矩阵
@@ -300,6 +341,19 @@ dsh-compact-agents
     ├── cordis       -> <dsh checkout>/vendor/cordis
     └── schemastery  -> <dsh checkout>/vendor/schemastery
 ```
+
+此外 `install.mjs` 还会在该 profile 下建一个联接 `<DSH_HOME>/profiles/<profile>/node_modules/dsh-compact-agents -> <本仓库>`，并把包名登记进 profile 的 `dsh.profile.bundles`(见下)。
+
+**两处挂载点，缺一不可**：
+
+| 挂载点 | 怎么来的 | 负责 |
+|---|---|---|
+| preset 行 | `install.mjs` 往 `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 的 `compaction` 组追加 | `compact_agents` 工具、压缩进度提示、自动续写。必须留在 `compaction` realm 内，否则解析不到 `ctx.compaction` |
+| 宿主组成里的 bundle 行 | `install.mjs --profile`：profile 的 `dsh.profile.bundles` 登记本包 → 本包 `dsh.bundle.patch`(`cordis.patch.yml`)插入 `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'` | 被 `ClientModuleRegistry` 扫到(下发 `lib/client.js`)、在宿主根注册 settings 命名空间 |
+
+`client-host.js` 刻意 `inject = []` —— 宿主根上没有 `compaction` 服务(它由 preset realm 内的 `compaction-basic` 提供)，声明依赖只会让这一行永远 pending。它只做两件事：让客户端模块表扫到本包、在宿主根上注册 settings 命名空间。
+
+**为什么 preset 一处不够**：`ClientModuleRegistry`(`packages/client/modules/src/index.ts`)只遍历**宿主 Loader 的 entries**，而它的 `internal/plugin` 监听里有 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` —— `fiber.entry` 为空的"子插件或手动挂载"被直接丢弃；preset 行正是 `agent-presets` 用 `internal.import` 手动挂载的，不是 loader 行。结果就是：只挂 preset 时浏览器 half 永远不下发，设置页里既没有命名空间也没有卡片、**且毫无报错**。详见[设计说明 §8.4](docs/design.md)。
 
 插件本体只 import 两个东西：`defineTool`(来自 `@deepseek-ai/dsh-tools`)，以及**动态** import 的 `@deepseek-ai/schemastery`(用来声明设置的 schema)。
 后两个 junction 只有设置面与测试需要；**缺了 schemastery 只会少一个设置页，不会让插件挂掉**（动态 import 失败只记一条 warn）。
@@ -313,11 +367,17 @@ node --check index.js                 # 语法自检
 node scripts/selftest.mjs             # 模块导入 + defineTool 规格 + 参数枚举
 node scripts/deferred-test.mjs        # 忙→排队→下次 idle 补压(假 ctx，不起 DSH)
 node scripts/integration-test.mjs     # 真机:真 Context + 真 ToolRuntime，全链路
+node scripts/compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离
+node scripts/inspect-presets.mjs      # 只读:设置页将显示的初值
 node scripts/validate-presets.mjs     # 4 份 preset 的挂载行与阈值
 node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 ```
 
 `integration-test.mjs` 覆盖假 ctx 测不到的东西，且**零模型调用、零成本**(只给 `systemPrompt` / `compaction` / `agents` 三个最小桩服务)：`inject` 真的解析、`ctx.tools.register(defineTool(...))` 真的被注册表接受、`ctx.tools.get()` 查得到、`ctx.tools.executionMode()` 真的判成 `exclusive`、端到端 `execute()` 返回值真的过 output schema、`render()` 真的产出文本块、非顶层 sweep 真的被拒。断言清单见[设计说明](docs/design.md#4-验证矩阵)。
+
+`compose-test.mjs` 则用**检出里真实的 `FileSettingsProvider`**(写到临时文件)与复刻的 preset `isolate` 语义，验证设置命名空间在真实服务 + 真实隔离作用域下也注册得上；它还会刻意**先挂宿主组成那一行、后挂 settings 服务**，证明 `ctx.inject` 的等待路径真的在服务到场后完成注册。
+
+> ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路，必须先用 `setPresetFilesForTest()` 把 preset 读写指向**临时夹具** —— 第一版漏了这一步，于是这个"验证"脚本**真的改写了用户的 preset**（把 `thresholdRatio` 写成了 0.42）。现在脚本结尾有一条守卫断言：**真实 preset 文件仍是 0.2**，一旦被改写立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。凡是会写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
 
 ## 已知限制
 

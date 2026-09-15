@@ -273,4 +273,58 @@ DSH 的设置页对插件命名空间是**泛型**的：`ConfigurablePluginsTab`
 | 两端一致性 | 卡片里的字段集合必须**逐个等于**宿主 schema 的字段；两端的命名空间字符串必须一致。这个接口是刻意在两端各写一份的，没有守卫就会悄悄漂移 |
 | 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、注册进 `settings.plugin.item` 且 `key` 正确、真 React 渲染出五个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛 |
 
+### 8.4 为什么浏览器 half 需要一行落在宿主组成里
+
+`ClientModuleRegistry`（`packages/client/modules/src/index.ts`）决定把哪些客户端 bundle 下发给浏览器，
+而它**只认宿主 Loader 的 entries**：
+
+- 构造时只做 `for (const entry of ctx.loader.entries())`；
+- 增量监听走 `ctx.on('internal/plugin', fiber => { const entryName = fiber.entry?.options.name; if (entryName === undefined) return; … })`
+  —— 那行 `return` 是整段语义的核心：`fiber.entry` 为空的是"子插件或手动挂载"，直接丢弃。
+
+preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见 3.2），本来就不是 loader 行，
+`fiber.entry` 为空。于是：
+
+| 只挂 preset 时的症状 | 机制 |
+|---|---|
+| 设置页里没有这个命名空间 | 宿主侧注册那一层同样没被扫到 |
+| 设置页里没有那张卡片 | 浏览器根本没收到 `lib/client.js` |
+| **没有任何报错** | 整条丢弃路径是静默的，日志里也看不出来 |
+
+**两个挂载点的职责分工**：
+
+| 挂载点 | 谁建的 | 载体 | 负责 | 为什么必须在这里 |
+|---|---|---|---|---|
+| preset 行 | `install.mjs` | `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 的 `compaction` 组 | `compact_agents` 工具、压缩进度提示、`max-tokens` 后自动续写 | 必须待在 `compaction` realm 内（见 3.3）：cordis 的隔离按服务名生效，realm 外解析不到 `ctx.compaction` |
+| 宿主组成里的 bundle 行 | `install.mjs --profile`（登记 profile 的 `dsh.profile.bundles`；包内 `dsh.bundle.patch` → `cordis.patch.yml`） | 宿主 Loader 的一行：`id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'`（入口 `client-host.js`） | 被 `client-modules` 扫到（从而把 `lib/client.js` 下发给浏览器）、在宿主根注册 settings 命名空间 | 只有 loader 行才进得了 `ClientModuleRegistry`；手动挂载的行在 `fiber.entry` 那一行就被丢弃 |
+
+**为什么 `client-host.js` 的 `inject = []`**：宿主根上**没有** `compaction` 服务（它由 preset realm 内的
+`compaction-basic` 提供），声明这个依赖只会让这一行永远 pending。所以这个入口不依赖任何服务，只做两件事：
+让 `client-modules` 扫到本包的 `dsh.client` 声明、在宿主根上注册 settings 命名空间。工具与提示仍归 preset 行。
+
+**注册只做一次，但要等服务就绪**：两处入口都调用 `registerSettings`，靠 `settings.js` 的模块级缓存保证
+**进程级只注册一次**（真实的 `SettingsProvider.register` 对重复命名空间直接抛错）。而 bundle 行完全可能
+**早于提供 `settings` 服务的那一层**被 apply —— compose 顺序由 profile 的 `bundles` 顺序决定 —— 所以
+`registerSettings` 用 `ctx.inject(['settings'], cb)` **等服务就绪**再注册，而不是同步取一次
+`ctx.get('settings')` 取不到就放弃：旧写法在这种情况下会**静默地什么都不注册**，症状与上表第一条完全一样。
+
+**形态先例**：这不是自创写法。已装的站外插件 `@a9i5k4/dsh-auto-memory` 就是同一形态 —— `package.json`
+声明 `dsh.bundle.patch: './cordis.patch.yml'`、`dsh.client: { platform: 'web', inject: [ …, '@deepseek-ai/dsh-client-ui-settings' ] }`
+与 `exports['./client']: './lib/client.js'`，patch 内容就是 `- insert: [ { id, name } ]`。本插件采用与它相同的形态。
+
+**这一节的结论怎么验证的**：
+
+| 手段 | 证明什么 |
+|---|---|
+| `scripts/compose-test.mjs` | 用**检出里真实的 `FileSettingsProvider`**（写到临时文件，绝不碰真实 `settings.yaml`）而不是桩，并复刻 preset 的 `isolate` 语义（`ctx.isolate('compaction', …)`）跑通 —— 证明"在真实服务 + 真实隔离作用域下也注册得上"，也就是设置页确实会列出这个命名空间 |
+| 同上，另一段 | 刻意**先挂宿主组成那一行、后挂 `settings` 服务**，证明 `ctx.inject` 的等待路径真的在服务到场后完成了注册 —— 这正是上文那句"毫无报错"的回归测试 |
+| `scripts/inspect-presets.mjs` | **只读**核对真实 preset 里读到的生效值（设置页将显示的初值），一个文件都不写 |
+| 源码对照 | `ClientModuleRegistry` 的两处遍历与那行 `return` 直接抄自检出源码（`packages/client/modules/src/index.ts`），不是推断 |
+
+> ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路。第一版没有把 preset
+> 读写指向临时夹具，于是这个"验证"脚本**真的改写了用户的 preset** —— 把 `thresholdRatio` 写成了 `0.42`。
+> 现在它在最前面调用 `setPresetFilesForTest([临时夹具])`，并在结尾加了一条守卫断言：**真实 preset 文件仍是 0.2**，
+> 任何一次跑测试把这个值改掉都会立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。
+> 凡是要写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
+
 
