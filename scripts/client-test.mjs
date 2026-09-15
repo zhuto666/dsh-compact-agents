@@ -7,8 +7,13 @@
  *      （探测方式与 validate-presets.mjs 借 js-yaml 相同：createRequire 指向检出里的
  *      package.json），探测不到才退回桩；真实 react-dom/server 可用时再真渲染一次；
  *   3. 断言工厂形状、cordis `apply`/`inject`、命名空间绑定、slot 注册键、注入面动作；
- *   4. 断言卡片在"未就绪"与"就绪"两种状态下都能渲染，五个字段的中文标签都在，
+ *   4. 断言卡片在"未就绪"与"就绪"两种状态下都能渲染：未就绪只留一句提示；就绪默认收起、
+ *      展开后五个字段的中文标签与两组生效时机题注都在、两个枚举字段是下拉框；
  *      并且 save/reset 真的调到了 scope 的 set/unset。
+ *
+ * 卡片默认收起，而服务端渲染没有点击可点，所以展开态由 `renderOpen()` 打开组件接受的
+ * `initiallyOpen`（不传它的那次渲染断言的正是"默认收起"）。"保存成功后自动收起"由
+ * `useEffect` 驱动，服务端渲染不会跑 effect，故不在本文件覆盖。
  *
  * 运行：node scripts/client-test.mjs [--dsh <checkout>]
  * @module scripts/client-test
@@ -81,16 +86,21 @@ const realProbe = {
   react: probe('react'),
   server: probe('react-dom/server'),
   store: probe('@deepseek-ai/dsh-client-store'),
+  // ui-primitives 的产物是 ESM + CSS 模块，Node 侧 require 多半解析不了（未知扩展名 .css）；
+  // 解析不到就用桩，桩提供 bundle 真正用到的那两个原子（Tag / IconChevronDownOutline14）。
+  primitives: probe('@deepseek-ai/dsh-client-ui-primitives'),
 }
 // CLIENT_TEST_STUBS=1 强制走桩分支，用来验证"拿不到真 react 时断言元素树"这条路。
 const forceStubs = process.env.CLIENT_TEST_STUBS === '1'
 const realReact = forceStubs ? undefined : realProbe.react
 const realServer = forceStubs ? undefined : realProbe.server
 const realStore = forceStubs ? undefined : realProbe.store
+const realPrimitives = forceStubs ? undefined : realProbe.primitives
 if (forceStubs) console.log('note: CLIENT_TEST_STUBS=1 — forcing the stub branch')
 console.log(`react          : ${realReact === undefined ? 'stub' : `real ${realReact.module.version} (${realReact.anchor})`}`)
 console.log(`react-dom/server: ${realServer === undefined ? 'stub' : `real (${realServer.anchor})`}`)
 console.log(`client-store   : ${realStore === undefined ? 'stub' : `real (${realStore.anchor})`}`)
+console.log(`ui-primitives  : ${realPrimitives === undefined ? 'stub' : `real (${realPrimitives.anchor})`}`)
 console.log('')
 
 // ---------------------------------------------------------------------------
@@ -117,12 +127,33 @@ check('registration is { id, factory }', typeof registration?.factory === 'funct
 // ---------------------------------------------------------------------------
 const requireCalls = []
 
-/** 兜底 React：只需 createElement 能造出可遍历的元素树。 */
+/** 兜底 React：createElement 造可遍历的元素树；三个 hook 是无状态实现（静态断言够用）。 */
 const reactStub = {
   version: 'stub',
   createElement(type, props, ...children) {
     return { type, props: { ...(props ?? {}), children: children.length <= 1 ? children[0] : children } }
   },
+  // 卡片用 useState/useRef/useEffect 管"点开/收起"与"保存成功后收起"。桩不需要记住它们：
+  // 桩分支里组件是被直接调用的，每次渲染都是一次干净调用，元素树断言只看初值。
+  useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}] },
+  useRef(initial) { return { current: initial } },
+  useEffect() {},
+}
+
+/** 本次实际使用的 React 实现 —— 桩原子的元素必须由同一个实现造出来。 */
+const reactImpl = realReact?.module ?? reactStub
+
+/**
+ * 兜底 ui-primitives：只提供 bundle 用到的那两个原子，形状与官方一致
+ * （Tag 渲染一枚带 data-tone 的 span，箭头渲染一个 svg）。
+ */
+const primitivesStub = {
+  Tag: props => reactImpl.createElement(
+    'span',
+    { className: props.className, 'data-tone': props.tone ?? 'outline' },
+    props.children,
+  ),
+  IconChevronDownOutline14: props => reactImpl.createElement('svg', { className: props.className, 'aria-hidden': 'true' }),
 }
 
 /** 兜底快照 store：语义与真的一致（getSnapshot 立即可见 / set 后通知订阅者）。 */
@@ -149,9 +180,10 @@ function createStoreStub(init) {
 }
 
 const modules = new Map([
-  ['react', realReact?.module ?? reactStub],
+  ['react', reactImpl],
   ['@deepseek-ai/dsh-client-store',
     realStore?.module ?? { createSnapshotStore: createStoreStub }],
+  ['@deepseek-ai/dsh-client-ui-primitives', realPrimitives?.module ?? primitivesStub],
   ['@deepseek-ai/dsh-client-ui-slots', { resolveSlotLabel: label => (typeof label === 'string' ? label : undefined) }],
   ['@deepseek-ai/dsh-client-ui-settings', {}],
 ])
@@ -176,6 +208,8 @@ check('bundle only requires platform seed modules (no dsh.client.external needed
 check('bundle requires react + client-store only',
   requireCalls.includes('react') && requireCalls.includes('@deepseek-ai/dsh-client-store'),
   requireCalls.join(', '))
+check('bundle requires the ui-primitives seed module for Tag + chevron',
+  requireCalls.includes('@deepseek-ai/dsh-client-ui-primitives'), requireCalls.join(', '))
 
 // ---------------------------------------------------------------------------
 // 3. 桩 ctx：真跑 apply，看它绑了哪个命名空间、往哪个 slot 注册了什么。
@@ -330,6 +364,19 @@ function render(props) {
 }
 
 /**
+ * 像用户点开卡片那样渲染展开态。
+ *
+ * 卡片默认收起（与官方 PluginCard 一致），而服务端渲染没有点击可点，所以直接把组件接受的
+ * `initiallyOpen` 打开 —— 展开后就是用户在浏览器里看到的那棵树。反过来说，不开这个开关的
+ * `render(faceView(face))` 断言的就是"默认收起"。
+ * @param injectedFace - `options.inject()` 的返回值。
+ * @returns `{markup, element}`。
+ */
+function renderOpen(injectedFace) {
+  return render({ ...faceView(injectedFace), initiallyOpen: true })
+}
+
+/**
  * 深度收集元素树里的文本。
  * @param node - React 元素 / 字符串 / 数组。
  * @param out - 累加器。
@@ -349,15 +396,21 @@ function collectText(node, out = []) {
   return out
 }
 
-/** 元素树里所有 <input> 的 props（markup 不可用时用它们做断言）。 */
-function collectInputs(node, out = []) {
+/**
+ * 元素树里所有控件（input / select）的记录（markup 不可用时用它们做断言）。
+ * 每条是控件自己的 props 加上 `tag`（元素名），因为 `<select>` 没有 type 属性可看。
+ * @param node - React 元素 / 字符串 / 数组。
+ * @param out - 累加器。
+ * @returns `{...props, tag}` 列表。
+ */
+function collectControls(node, out = []) {
   if (node === null || node === undefined || typeof node !== 'object') return out
   if (Array.isArray(node)) {
-    for (const child of node) collectInputs(child, out)
+    for (const child of node) collectControls(child, out)
     return out
   }
-  if (node.type === 'input') out.push(node.props)
-  collectInputs(node.props?.children, out)
+  if (node.type === 'input' || node.type === 'select') out.push({ ...node.props, tag: node.type })
+  collectControls(node.props?.children, out)
   return out
 }
 
@@ -385,32 +438,42 @@ for (const status of ['loading', 'unavailable', 'weird']) {
     threw === undefined ? '' : String(threw))
 }
 
-// 4b. 组件在"没有 props / 没有 hook"时也不能崩。
+// 4b. 组件在"没有 props / 没有 hook"时也不能崩（真渲染器下这就是一次真实渲染）。
 try {
-  const bare = cardComponent({})
+  const bare = render({})
   check('component renders with empty props (no crash, says 设置尚未就绪)',
-    textOf({ element: bare }).includes('设置尚未就绪'))
+    textOf(bare).includes('设置尚未就绪'))
 } catch (error) {
   check('component renders with empty props (no crash, says 设置尚未就绪)', false, String(error))
 }
 
-// 4c. 就绪：五个字段的中文标签 + 生效时机 + 保存/重置动作都在。
+// 4c. 就绪：默认只渲染折叠的头部；展开后五个字段、时机分组、保存/放弃都在。
 scope.setStatus('ready')
-const ready = render(faceView(face))
-const readyText = textOf(ready)
 const LABELS = ['压缩提示播报', '自动续写次数上限', '压缩触发阈值比例', '压缩后保留比例', '受控阶段输出预算']
+const collapsed = render(faceView(face))
+const collapsedText = textOf(collapsed)
+check('ready card starts collapsed: header only, no field rows',
+  collapsedText.includes('压缩与自动续写') && !LABELS.some(label => collapsedText.includes(label)),
+  collapsedText.replace(/\s+/g, ' ').slice(0, 140))
+const ready = renderOpen(face)
+const readyText = textOf(ready)
 const missing = LABELS.filter(label => !readyText.includes(label))
-check('ready card shows all five field labels', missing.length === 0, `missing: ${missing.join(', ')}`)
-check('ready card explains 立即生效 (notice / maxAutoContinues)', readyText.includes('立即生效'))
-check('ready card explains 新建会话生效 for the preset-written fields',
-  (readyText.match(/新建会话生效/g) ?? []).length === 3,
-  String((readyText.match(/新建会话生效/g) ?? []).length))
-check('ready card renders 保存 / 放弃修改', readyText.includes('保存') && readyText.includes('放弃修改'))
-check('ready card seeds drafts from the effective section rows',
+check('expanded card shows all five field labels', missing.length === 0, `missing: ${missing.join(', ')}`)
+check('expanded card groups the fields by when they take effect (one caption per group)',
+  (readyText.match(/立即生效/g) ?? []).length === 1
+  && (readyText.match(/新建会话生效/g) ?? []).length === 1,
+  `立即生效 x${(readyText.match(/立即生效/g) ?? []).length} / 新建会话生效 x${(readyText.match(/新建会话生效/g) ?? []).length}`)
+check('expanded card renders 保存 / 放弃修改', readyText.includes('保存') && readyText.includes('放弃修改'))
+const readyControls = collectControls(ready.element)
+check('enum fields render as selects (notice + maxAutoContinues)',
+  ready.markup === undefined
+    ? readyControls.filter(control => control.tag === 'select').length === 2
+    : (ready.markup.match(/<select/g) ?? []).length === 2,
+  ready.markup === undefined ? 'element tree' : `markup: ${(ready.markup.match(/<select/g) ?? []).length} select(s)`)
+check('drafts are seeded from the effective section rows (0.2 in a text box, 2 in a select)',
   ready.markup !== undefined
-    ? ready.markup.includes('value="2"') && ready.markup.includes('value="0.2"')
-    : collectInputs(ready.element).some(input => input.value === '2')
-      && collectInputs(ready.element).some(input => input.value === '0.2'),
+    ? ready.markup.includes('value="0.2"') && /value="2"[^>]*selected/.test(ready.markup)
+    : readyControls.some(control => control.value === '0.2') && readyControls.some(control => control.value === '2'),
   ready.markup === undefined ? 'element tree' : 'static markup')
 
 // 4d. 非法草稿：卡片报错并阻止保存。
@@ -420,7 +483,7 @@ check('out-of-range draft marks the field invalid and blocks saving',
   invalidState.invalid === true && invalidState.fields.thresholdRatio.invalid === true
   && invalidState.dirty === true,
   JSON.stringify(invalidState.fields.thresholdRatio))
-const invalidRendered = render(faceView(face))
+const invalidRendered = renderOpen(face)
 check('invalid draft renders a Chinese error line and disables 保存',
   textOf(invalidRendered).includes('取值不合法')
   || textOf(invalidRendered).includes('已阻止保存'),
@@ -439,6 +502,11 @@ check('edit stages a draft (dirty, not yet written)',
   dirtyState.dirty === true && dirtyState.fields.maxAutoContinues.text === '5'
   && scope.calls.length === callsBefore,
   JSON.stringify(dirtyState.fields.maxAutoContinues))
+const dirtyRendered = render(faceView(face))
+check('a card holding unstaged edits says 未保存 on its header (visible while collapsed)',
+  textOf(dirtyRendered).includes('未保存')
+  && !LABELS.some(label => textOf(dirtyRendered).includes(label)),
+  textOf(dirtyRendered).replace(/\s+/g, ' ').slice(0, 140))
 await face.save()
 check('save writes the staged value through scope.set',
   scope.calls.some(call => call.op === 'set' && call.field === 'maxAutoContinues' && call.value === 5),
@@ -450,7 +518,7 @@ check('after save the draft is re-seeded and clean',
   JSON.stringify(savedState.fields.maxAutoContinues))
 check('a user-layer entry marks the field overridden',
   savedState.fields.maxAutoContinues.overridden === true)
-const overriddenRendered = render(faceView(face))
+const overriddenRendered = renderOpen(face)
 const overriddenText = textOf(overriddenRendered)
 const resetCount = (overriddenText.match(/重置/g) ?? []).length
 check('overridden field offers 重置', resetCount === 1, `${resetCount} reset control(s)`)
@@ -482,7 +550,7 @@ const failedState = face.hooks.compactAgentsCard.getSnapshot()
 check('a rejected write marks failed instead of throwing',
   writeThrew === undefined && failedState.failed === true && failedState.dirty === true,
   JSON.stringify({ failed: failedState.failed, dirty: failedState.dirty }))
-const failedRendered = render(faceView(face))
+const failedRendered = renderOpen(face)
 check('failed save renders the Chinese failure line',
   textOf(failedRendered).includes('保存未生效'))
 face.discard()
@@ -490,7 +558,7 @@ scope.restoreWrites()
 
 // 4h. 只读文档：控件禁用而不是消失。
 scope.setWritable(false)
-const readonlyRendered = render(faceView(face))
+const readonlyRendered = renderOpen(face)
 const readonlyState = face.hooks.compactAgentsCard.getSnapshot()
 check('read-only document still renders the five labels',
   LABELS.every(label => textOf(readonlyRendered).includes(label)))
