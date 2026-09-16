@@ -6,7 +6,7 @@
 
 Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **Thresholds and friends are editable in Settings** · No network, no dependencies; the browser half is hand-written with no build step
 
-[![version](https://img.shields.io/badge/version-0.4.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.7.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 **v0.3.0**: compaction is visible in the conversation, and a turn truncated by the output cap continues itself. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
 
@@ -524,6 +524,8 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
 
 ## Changelog
+
+- **v0.7.4** — the version badge at the top of the README now matches package.json, enforced by npm test. Spotted while checking the market listing: the badge still said 0.4.0 while package.json was 0.7.x, and the market reads the README, so that stale number was what visitors saw on dsh.market. A hand-maintained badge will be forgotten again, so validate-presets now fails when the two disagree.
 
 - **v0.7.3** — writing a preset value now also refreshes a **numeric** trailing comment. Real case: after the card changed retainRatio from 0.05 to 0.02 the file still read `retainRatio: 0.02   # keep the last 5% of the window = 50K of raw text` — the value and its explanation disagreed, and that file is the one place a user looks. The rule stays narrow: a comment containing digits (i.e. derived from the old value) is replaced by a canonical note for the new value; a comment without digits is the user's own prose and is preserved; a line with no comment gains none.
 

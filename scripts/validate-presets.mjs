@@ -5,11 +5,16 @@
  *   3. 该行引用的绝对路径存在，且指向本项目；
  *   4. 顺带报告 `compaction-basic` 的 `thresholdRatio` / `retainRatio`（自动压缩阈值）。
  *
+ * 另外校验仓库自己的文档一致性：两份 README 顶部的版本徽章必须等于 `package.json` 的版本
+ * （手写的徽章停在了 0.4.0，而市场收录抓的正是 README，别人看到的就是那个过时数字）。
+ *
  * 运行：node scripts/validate-presets.mjs [--preset <agent.cordis.yml> ...]
  * @module scripts/validate-presets
  */
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs, resolveDshCheckout } from './lib/presets.mjs'
 
 // 本项目刻意不装依赖（离线、零安装）：js-yaml 与 cordis 一样从 DSH 检出里借。
@@ -58,5 +63,28 @@ for (const file of presets) {
     console.log(`FAIL ${label}: ${error.message}`)
   }
 }
+
+// ── 仓库自己的文档一致性 ───────────────────────────────────────────────
+// README 顶上的版本徽章是手写的，靠自觉必然忘：它曾停在 0.4.0 而 package.json 已经 0.7.x，
+// 而市场收录抓的正是 README —— 别人在 dsh.market 上看到的版本号就是那个过时的数字。
+// 所以让两者不一致时直接失败，而不是等谁哪天顺手看见。
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version
+for (const name of ['README.md', 'README.en.md']) {
+  const text = fs.readFileSync(path.join(repoRoot, name), 'utf8')
+  const badge = /shields\.io\/badge\/version-([0-9][0-9.]*)-/.exec(text)
+  if (badge === null) {
+    failed += 1
+    console.log(`FAIL ${name}: 找不到版本徽章 (shields.io/badge/version-<版本>-…)`)
+    continue
+  }
+  if (badge[1] !== pkgVersion) {
+    failed += 1
+    console.log(`FAIL ${name}: 版本徽章是 ${badge[1]}，package.json 是 ${pkgVersion} —— 两者必须一致`)
+    continue
+  }
+  console.log(`${name}: 版本徽章 ${badge[1]} == package.json`)
+}
+
 console.log(failed === 0 ? `ALL OK (${checked} preset mounted)` : `${failed} FAILED`)
 process.exitCode = failed === 0 ? 0 : 1
