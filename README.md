@@ -4,11 +4,11 @@
 
 **DeepSeek Harness 会话上下文强制压缩插件(模型可调用的 `compact_agents`)**
 
-强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在侧栏「插件」页里直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
+强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在设置里自成一页直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.8.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.8.0**：DSH 0.1.6 把插件配置从「设置」搬到了侧栏新的**「插件」页**，顺手把我们那张卡片挤没了 —— 老槽位 `settings.plugin.item` 在新版里**没有任何渲染方**，注册上去也毫无报错。这一版同时占两个槽位（新版 `plugins.bundle.config` 用**包名**当键、老版 `settings.plugin.item` 用命名空间当键），并把本包登记进 profile 的 `dependencies` —— 插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据就是它。五项参数、两种生效时机一切照旧。详见[设计说明 §8.5](docs/design.md)。
+**v0.8.1**：参数表单回到"设置里自成一页" —— **设置 → 「压缩与自动续写」**，与「内置插件」同级。起因是 DSH 0.1.6 把插件配置搬去侧栏「插件」页、并退役了老槽位 `settings.plugin.item`，我们那张卡片先是凭空消失（`slots.inject` 对没人声明的槽位是静默的），随后即便把表单挂进插件页，也得"进插件页 → 找到本包 → 进详情"才能改参数。现在用官方的 `settings.section` 槽位自成一页，同时保留插件页与旧设置页两处（三处共用同一份正文与同一个控制器）。上一版还顺带修掉了第二处静默失败：只在 `dsh.profile.bundles` 里、不在 profile `dependencies` 里的包会被插件页整条过滤。详见[设计说明 §8.5](docs/design.md) 与 [§8.7](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -284,13 +284,15 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ### 在界面里改这些参数
 
-**DSH ≥ 0.1.6**：打开侧栏的 **「插件」页** → 找到 `dsh-compact-agents` → 点进详情，里面就是「压缩与自动续写」表单（页自己带标题与面包屑，表单只有字段本身）。列表里那一行也带一句摘要，关着的时候就写着当前阈值与保留比例。
+**首选：设置里自成一页。** 打开 **设置** → 侧栏里找 **「压缩与自动续写」** —— 它和「通用设置 / 模型 / 内置插件 / Agent 预设」是**同级**的一项，点进去就是全部五个字段。这一处与 DSH 版本无关（0.1.5 与 0.1.6 都在），也不要求你先进插件页找到本包。
 
-**DSH ≤ 0.1.5**：还是在 **设置 → 插件 → 可配置** 里，一张可折叠的「压缩与自动续写」卡片。
+**第二处：侧栏「插件」页里本包的详情页**（DSH ≥ 0.1.6）。上游把插件配置搬到了这里，所以我们也在：侧栏「插件」→ 找到 `dsh-compact-agents` → 点进详情，描述与组件行之间是同一份表单（页自己带标题与面包屑，表单只有字段本身）；列表里那一行还带一句摘要，写着当前阈值与保留比例。
+
+**第三处：老设置页**（DSH ≤ 0.1.5）：**设置 → 插件 → 可配置** 里一张可折叠的「压缩与自动续写」卡片。
 
 ![旧版设置页里的「压缩与自动续写」卡片：编号 1 是入口，2 是卡片标题，3 是立即生效的两个字段，4 是新建会话生效的三个字段，5 是底部的放弃修改与保存](docs/images/settings-card-annotated.png)
 
-> 上图是 **0.1.5 及更早**的界面。同一个组件现在同时注册进两个槽位（新版 `plugins.bundle.config` 用**包名**当键、旧版 `settings.plugin.item` 用 settings 命名空间当键），正文只有一份，两端不会漂移；新版那边不再套卡片外壳，因为页自己已经画了标题。旧图暂未替换 —— 取新截图需要重启 GUI。
+> 上图是 **0.1.5 及更早**的界面。浏览器 half 现在**同时注册三处**（`settings.section` 自成一页、`plugins.bundle.config` 键 = 包名、`settings.plugin.item` 键 = settings 命名空间），正文只有一份、控制器只有一个，三处不会漂移；注册各自独立，一处失败另两处照旧。旧图暂未替换 —— 取新截图需要重启 GUI。
 
 > 这个表单是**纯参数表单**：本插件在界面上**没有自己的按钮** —— 压缩与自动续写都是**自动发生**的，
 > 框架自带的「重置」只是还原入口，不会触发压缩。
@@ -309,7 +311,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 旧版那张卡片长什么样，见上面那张标注图；图里的编号与右侧图例一一对应。[docs/images](docs/images/README.md) 记录了这批图的来源与做法（真实界面截图 + 标注，不含任何个人信息），将来若要补别的截图，命名与插入位置也在那里写清。
 
-表单能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是界面上既没有命名空间也没有表单、且毫无报错。**另外它还得在 profile 的 `dependencies` 里**，否则新版插件页会把它整条过滤掉。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md) 与 [§8.5](docs/design.md)）。
+表单（三处中的任何一处）能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是界面上既没有命名空间也没有表单、且毫无报错。**另外它还得在 profile 的 `dependencies` 里**，否则新版插件页会把它整条过滤掉。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md) 与 [§8.5](docs/design.md)）。
 
 设计要点（为什么分成两种生效时机）：
 
@@ -514,6 +516,8 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **随包发行的 preset 会被它自己的插件升级重写**：`<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行是安装时插进去的，插件升级会整份重写掉它（实测撞上过：`@linxin666/dsh-liangshen` 升级后默认 preset 里就没有 `compact-agents` 行了，而用户自建的 `~/.dsh/.agent-presets/liangshen` 又被随包同名 preset **遮蔽**——`agent-presets` 的 roots 顺序是"随包最先、用户目录最后"，同 id 前者胜）。升级后重跑一次 `node scripts/install.mjs` 即可，`node scripts/validate-presets.mjs` 会先告诉你少了哪一份。
 
 ## 更新历史
+
+- **v0.8.1** — **参数表单回到"设置里自成一页"**：新增官方 `settings.section` 槽位的注册（`id: compact-agents`、`order: 26`、侧栏那一行文字「压缩与自动续写」），于是 **设置 → 「压缩与自动续写」** 与「通用设置 / 模型 / 内置插件 / Agent 预设」同级 —— 这个位置与宿主版本无关（0.1.5、0.1.6 都在），也不必先钻进插件页找到本包。三处注册共用同一份正文（`formBody`）与同一个控制器，各自 `try/catch`，一处失败不影响另外两处。起因见 v0.8.0：上游把插件配置搬去插件页后，老槽位 `settings.plugin.item` 已无渲染方，用户明确要求"和插件同级"，而不是挂在插件页里面。
 
 - **v0.8.0** — **跟上 DSH 0.1.6 的插件页**。上游 `90af3110b7 feat(web): host plugin configuration on the Plugins page` 把插件配置从「设置」搬到侧栏新的「插件」页（`ui-plugin-manager`），老槽位 `settings.plugin.item` 的渲染方 `ConfigurablePluginsTab.tsx` 被删掉 —— 我们那张卡片于是**凭空消失、毫无报错**（`ctx.slots.inject` 对没人声明的槽位是静默的，注册上去既不抛错也不显示）。现在同一份正文同时注册进两个槽位：新版 `plugins.bundle.config`（键是**包名**）画表单、旧版 `settings.plugin.item`（键是 settings 命名空间）画折叠卡片；两边共用同一个控制器与同一份正文，不会漂移；一个槽位注册失败也不会连累另一个。第二处静默失败一并修掉：新版插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据是包名在不在 profile 的 `dependencies` 里 —— 只登记 `dsh.profile.bundles` 的旧安装会被**整条过滤掉**，所以 `install.mjs` 现在两处都写（优先走官方 `dsh plugin add`，失败或 `--no-cli` 时回落到行级手写登记，写前留 `.bak-compact-agents`、写坏自动回滚），`validate-presets.mjs` 把"在 bundles 里却不在 dependencies 里"直接判成失败。`client-test.mjs` 相应覆盖：两个槽位的注册、表单形状（不套卡片外壳）、列表项一行摘要、命名空间未就绪时的降级，以及槽位互不连累。
 

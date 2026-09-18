@@ -312,23 +312,33 @@ bundleExports.apply(ctx)
 check('apply binds the compact-agents settings namespace',
   boundSpecs.length === 1 && boundSpecs[0].namespace === 'compact-agents',
   JSON.stringify(boundSpecs.map(spec => spec.namespace)))
-/** 按槽位名找一条注册（两个宿主各一条）。 */
+/** 按槽位名找一条注册（三个宿主各一条）。 */
 const regBySlot = name => registrations.find(entry => entry.options?.name === name)
 const cardReg = regBySlot('settings.plugin.item')
 const panelReg = regBySlot('plugins.bundle.config')
-check('apply subscribes to both hosts (old settings page + new Plugins page)',
-  injectCalls.includes('settings.plugin.item') && injectCalls.includes('plugins.bundle.config'),
+const sectionReg = regBySlot('settings.section')
+check('apply subscribes to all three hosts (own settings section + new Plugins page + old settings page)',
+  ['settings.section', 'plugins.bundle.config', 'settings.plugin.item'].every(slot => injectCalls.includes(slot)),
   injectCalls.join(', '))
 check('老设置页：注册键是 settings 命名空间（字段名是 "key"，不是 "entryKey"）',
   cardReg?.options?.key === 'compact-agents' && !('entryKey' in (cardReg?.options ?? {})),
   JSON.stringify(cardReg?.options))
 check('新插件页：槽位是 plugins.bundle.config，注册键是包名',
   panelReg?.options?.key === 'dsh-compact-agents', JSON.stringify(panelReg?.options))
-check('both hosts receive a component function',
-  typeof cardReg?.component === 'function' && typeof panelReg?.component === 'function')
+check('设置分区：list 槽位的形状（id + order + label，没有 key）',
+  sectionReg?.options?.id === 'compact-agents'
+  && typeof sectionReg?.options?.order === 'number'
+  && sectionReg?.options?.label === '压缩与自动续写'
+  && !('key' in (sectionReg?.options ?? {})),
+  JSON.stringify(sectionReg?.options))
+check('设置分区排在官方几项之后、第三方之前（order 26）',
+  sectionReg?.options?.order === 26, String(sectionReg?.options?.order))
+check('all three hosts receive a component function',
+  [cardReg, panelReg, sectionReg].every(entry => typeof entry?.component === 'function'))
 
 const face = cardReg.options.inject()
 const panelFace = panelReg.options.inject()
+const sectionFace = sectionReg.options.inject()
 check('inject face carries actions edit/resetField/save/discard',
   ['edit', 'resetField', 'save', 'discard'].every(name => typeof face[name] === 'function'),
   Object.keys(face).join(', '))
@@ -655,7 +665,43 @@ check('插件页表单：命名空间未就绪时只留一句提示，不抛异�
   panelText(panelPending).includes('设置尚未就绪'))
 scope.setStatus('ready')
 
-// 5b. 一个槽位注册失败不能连累另一个（重复注册会抛，版本差异也可能抛）。
+// ---------------------------------------------------------------------------
+// 6. 自成一页的设置分区（槽位 `settings.section`）：与「内置插件」同级的那个入口。
+//    形状与前面两个都不同 —— 壳只渲染这一列内容，标题与引言必须自己画。
+// ---------------------------------------------------------------------------
+/**
+ * 渲染设置分区。
+ * @param props - 分区 props（注入面）。
+ * @returns `{markup, element}`。
+ */
+function renderSection(props) {
+  if (realReact !== undefined && realServer !== undefined) {
+    const element = realReact.module.createElement(sectionReg.component, props)
+    return { markup: realServer.module.renderToStaticMarkup(element), element }
+  }
+  return { markup: undefined, element: sectionReg.component(props) }
+}
+
+const sectionReady = renderSection({ ...faceView(sectionFace) })
+check('设置分区：标题 + 引言 + 五个字段 + 保存都在',
+  textOf(sectionReady).includes('压缩与自动续写')
+  && textOf(sectionReady).includes('压缩触发阈值比例')
+  && textOf(sectionReady).includes('自动续写次数')
+  && textOf(sectionReady).includes('保存'),
+  textOf(sectionReady).replace(/\s+/g, ' ').slice(0, 140))
+check('设置分区：自带 dsh-ca-section 外壳（壳只给内容列，标题得自己画）',
+  (sectionReady.markup ?? collectClasses(sectionReady.element).join(' ')).includes('dsh-ca-section'))
+check('设置分区：与另外两处共用同一个控制器',
+  sectionFace.hooks?.compactAgentsCard === face.hooks?.compactAgentsCard)
+
+scope.setStatus('loading')
+const sectionPending = renderSection({ ...faceView(sectionFace) })
+check('设置分区：命名空间未就绪时只留标题 + 一句提示，不抛异常',
+  textOf(sectionPending).includes('压缩与自动续写')
+  && textOf(sectionPending).includes('设置尚未就绪'))
+scope.setStatus('ready')
+
+// 6b. 一个槽位注册失败不能连累另外两个（重复注册会抛，版本差异也可能抛）。
 const warnings = []
 const originalWarn = console.warn
 console.warn = message => { warnings.push(String(message)) }
@@ -678,13 +724,18 @@ try {
     return seen
   }
   const withoutPanel = isolate('plugins.bundle.config')
-  check('新槽位注册失败时，老设置页那张卡仍然注册上',
-    withoutPanel.includes('settings.plugin.item') && warnings.length > 0,
+  check('新槽位注册失败时，设置分区与老设置页那张卡仍然注册上',
+    withoutPanel.includes('settings.plugin.item') && withoutPanel.includes('settings.section')
+    && warnings.length > 0,
     `${withoutPanel.join(', ')} | warn: ${warnings[0] ?? '(none)'}`)
   const withoutCard = isolate('settings.plugin.item')
-  check('老槽位注册失败时，插件页那份表单仍然注册上',
-    withoutCard.includes('plugins.bundle.config'),
+  check('老槽位注册失败时，设置分区与插件页那份表单仍然注册上',
+    withoutCard.includes('plugins.bundle.config') && withoutCard.includes('settings.section'),
     withoutCard.join(', '))
+  const withoutSection = isolate('settings.section')
+  check('设置分区注册失败时，插件页与老设置页两处仍然注册上',
+    withoutSection.includes('plugins.bundle.config') && withoutSection.includes('settings.plugin.item'),
+    withoutSection.join(', '))
 } finally {
   console.warn = originalWarn
 }

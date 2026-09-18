@@ -93,7 +93,7 @@ preset 里含注释与 `!!js` 表达式。用 YAML 反序列化再序列化会�
 | `selftest.mjs` | 模块 | 可导入；`defineTool` 接受规格；工具名 `compact_agents`；参数枚举 `scope=others,all,self,ids`、`whenBusy=queue,skip`；`timeoutMs=1800000` |
 | `deferred-test.mjs` | 行为(假 ctx) | 首次忙 → 回报 `queued`；**无关 agent 的 idle 不误触发**；真正 idle 后 `compactNow` 被再次调用；一次性监听器已注销；日志含遮蔽统计 |
 | `integration-test.mjs` | 真机(真 Context + 真 ToolRuntime) | `inject` 解析；注册表可查出工具；参数/输出 schema 存在；`isConcurrencySafe` 是谓词且返回 `false`；`executionMode` 实测 `exclusive`；`execute(scope=others)` 排除调用者；返回值字段与 `CompactionResult` 一致；行内含压缩前后 token；`render()` 产出文本块；子代理扫描被拒；`scope=self` 忙时排队不报错；**`compaction/start` 追加可见提示(来源/summary/`surfaceOp`/非空 id)**；**`compaction/end` 给出 `213,400 → 49,800` 与遮蔽计数**；**失败压缩报"未完成"**；**无关事件不产生提示**；**`notice: false` 关掉提示但保留工具**；**`max-tokens` 轮结束自动续写一次且消息为冻结的 user**；**连续两次续写、第三次被上限拦住并播报**；**正常结束的轮次归还额度**；**`maxAutoContinues: 0` 关闭** |
-| `client-test.mjs` | 浏览器 half(假 `__ModuleLoader__`；真 React 18 + `react-dom/server` 或桩，两种模式都跑；`CLIENT_TEST_STUBS=1` 强制走桩) | 工厂 id = 包名、只 require 种子模块、`apply`/`inject` 形态；**两个槽位都订阅、键各自正确**（`plugins.bundle.config` = 包名 `dsh-compact-agents`、`settings.plugin.item` = settings 命名空间 `compact-agents`，且用的是 `key:` 不是 `entryKey:`）；注入面动作齐全；渲染出五个字段与两组生效时机题注、越界阻止保存、`status !== 'ready'` 只留一句提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛；**新插件页那份：正文容器是 `dsh-ca-page`、不画 `dsh-ca-card`/`dsh-ca-header`/箭头、与卡片共用同一个控制器、`view: 'summary'` 给出一行摘要**；**一个槽位注册失败不连累另一个**（分别让新旧槽位抛，断言另一半仍注册上且有 `console.warn`） |
+| `client-test.mjs` | 浏览器 half(假 `__ModuleLoader__`；真 React 18 + `react-dom/server` 或桩，两种模式都跑；`CLIENT_TEST_STUBS=1` 强制走桩) | 工厂 id = 包名、只 require 种子模块、`apply`/`inject` 形态；**三处槽位都订阅**（`settings.section` + `plugins.bundle.config` + `settings.plugin.item`）；**三处的注册形状各自正确** —— 老设置页 `key:` = settings 命名空间 `compact-agents`、新插件页 `key:` = 包名 `dsh-compact-agents`（两者都不是 `entryKey:`），设置分区是 **list** 形状：`id: 'compact-agents'` + `order: 26` + `label: '压缩与自动续写'` 且**没有 `key`**；三者都拿到组件函数；注入面动作齐全；渲染出五个字段与两组生效时机题注、越界阻止保存、`status !== 'ready'` 只留一句提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛；**新插件页那份：正文容器是 `dsh-ca-page`、不画 `dsh-ca-card`/`dsh-ca-header`/箭头、与卡片共用同一个控制器、`view: 'summary'` 给出一行摘要**；**设置分区那份：自带 `dsh-ca-section` 外壳、标题 + 引言 + 五个字段 + 保存都在、未就绪时只留标题 + 一句提示、与另外两处共用同一个控制器**；**三处互不连累**（三个方向各一条：分别让插件页 / 老设置页 / 设置分区抛，断言另外两处仍注册上且有 `console.warn`） |
 | `validate-presets.mjs` | 配置 | 每份 preset 可解析(含 `!!js` 标签)；挂载行在 `compaction` 组内；引用的绝对路径存在且指向本项目；报告 `thresholdRatio` / `retainRatio`；profile 侧"在 `dsh.profile.bundles` 里却不在 `dependencies` 里"→ FAIL 并打印修法（§8.5） |
 
 `integration-test.mjs` 用四个最小桩服务(`systemPrompt` / `compaction` / `tokenMeter` / `agents`)代替整个 Harness，所以**零模型调用、零成本**，可以随时跑。
@@ -283,8 +283,9 @@ slot 契约已被上游 `90af3110b7` 删除）；0.1.6 起搬到了侧栏「插�
 > browser, and the tab pairs the two without ever learning what the namespace means.
 
 于是：宿主侧 `settings.register('compact-agents', schema, { base, applies })` —— **这一半两代都不变**；
-浏览器侧向两个槽位各注册一次：老槽位 `settings.plugin.item` 用 settings 命名空间当键，新槽位
-`plugins.bundle.config` 用包名当键（形状见 §8.5）。
+浏览器侧**三处各注册一次**（v0.8.1 起；形状见 §8.5 与 §8.7）：`settings.section` 用 `id`/`order`/`label`
+认领设置侧栏里自成一页的位置（list 槽位，没有键），老槽位 `settings.plugin.item` 用 settings 命名空间当键，
+新槽位 `plugins.bundle.config` 用包名当键。
 **没有通用兜底界面** —— 插件不提供表单，那个命名空间在哪个宿主里都不出现，所以表单是必需品。
 
 | 决策 | 理由 |
@@ -295,7 +296,7 @@ slot 契约已被上游 `90af3110b7` 删除）；0.1.6 起搬到了侧栏「插�
 | 登记键写 `key:` 而不是 `entryKey:` | `ctx.slots.register({ name, key })` 用的是 `key`；`entryKey` 是**渲染侧** `renderSlot` 的派发选项（新页 `packages/client/ui-plugin-manager/src/client/PluginManagerPage.tsx:470`、老页 `ConfigurablePluginsTab.tsx` 都是这么传的）。两者不能混 |
 | **进程级只注册一次** | `SettingsProvider.register()` 对重复命名空间直接 `throw`，而注册挂在该 provider 的 fiber 上、不随调用者卸载。本插件挂在 preset 行上、每次换代都会重新 apply，所以必须用模块级缓存复用同一个 scope，否则换代时那一行会直接挂掉 |
 | 命名空间的 `base` 用 preset 文件里的**现值** | 表单里显示的就该是"真正生效的值"，而不是插件凭空给的默认值；三层优先级是「schema 默认 < 作文层（行配置 + preset 现值）< 用户层（界面）」 |
-| `applies: 'restart'` | 五项里三项要等新会话才生效，取保守声明；表单上逐项写明真实时机（卡片与插件页共用同一份正文，见 §8.5） |
+| `applies: 'restart'` | 五项里三项要等新会话才生效，取保守声明；表单上逐项写明真实时机（三处注册共用同一份正文，见 §8.5 / §8.7） |
 
 ### 8.2 两类值，两种生效机制
 
@@ -322,7 +323,7 @@ slot 契约已被上游 `90af3110b7` 删除）；0.1.6 起搬到了侧栏「插�
 | 落盘 | 备份内容、无残留临时文件、字节级"只有目标行变了"、越界拒绝、幂等 |
 | 注册 | 命名空间名、`applies`、`base` 携带行配置与 preset 现值、schema 真能解析、**二次挂载不重复注册**、变更后自身旋钮立即生效且 preset 参数落盘 |
 | 两端一致性 | 表单里的字段集合必须**逐个等于**宿主 schema 的字段；两端的命名空间字符串必须一致。这个接口是刻意在两端各写一份的，没有守卫就会悄悄漂移 |
-| 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、**两个槽位各注册一次且键正确**（新页 = 包名、老设置页 = settings 命名空间）、真 React 渲染出五个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛、**一个槽位注册失败不连累另一个**（端到端清单见 §4 的 `client-test.mjs` 行） |
+| 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、**三处各注册一次且形状正确**（设置分区 = **list** 槽位 `settings.section`，用 `id`/`order`/`label`；插件页 = keyed，键 = 包名；老设置页 = keyed，键 = settings 命名空间）、真 React 渲染出五个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛、**一处注册失败不连累另外两处**（端到端清单见 §4 的 `client-test.mjs` 行，第三处的机制与理由见 §8.7） |
 
 ### 8.4 为什么浏览器 half 需要一行落在宿主组成里
 
@@ -418,6 +419,9 @@ preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见
 
 **我们的处理**（`lib/client.js`）：
 
+> v0.8.1 起再加**第三处** `settings.section`（设置侧栏里自成一页，现在是主入口）—— 见 §8.7。
+> 这一节记的是 v0.8.0 那两处与它们各自的静默失败；那两条分析**仍然成立**，只是不再是我们唯一的出路。
+
 - **同一份正文两端复用**：`formBody(state, face)`；新端 `CompactAgentsPanel` 在 `view: 'page'` 时返回
   `div.dsh-ca-page` + 共用正文，`view: 'summary'` 时返回一行 `dsh-ca-summary` 摘要 —— **不套卡片外壳**，
   因为页自己已经画了标题/图标/面包屑；老端 `CompactAgentsCard` 仍是可折叠卡片（头部、箭头、收起自己画）。
@@ -473,7 +477,8 @@ package without a bundle patch restores `package.json` and `pnpm-lock.yaml` as t
 
 **兼容性结论**：DSH ≥ 0.1.6 走新槽位，≤ 0.1.5 走老槽位，**两边同一份正文**（`formBody`）、同一个
 控制器（两端状态与"已覆盖/重置"语义完全一致），表单字段与生效时机逐项相同；谁有宿主谁渲染，
-不需要版本判断 —— `slots.inject` 本身就是"等声明"的语义。`npm test` 里的 `client-test.mjs` 两端都锁（§4）。
+不需要版本判断 —— `slots.inject` 本身就是"等声明"的语义。`npm test` 里的 `client-test.mjs` 三处都锁（§4）。
+v0.8.1 再加的第三处 `settings.section` **与这两个 keyed 槽位无关**，它在两代宿主上都存在，见 §8.7。
 
 `package.json` 的 `dsh.client.inject` **没有**加 `@deepseek-ai/dsh-client-ui-plugin-manager`，理由：
 
@@ -506,6 +511,72 @@ package without a bundle patch restores `package.json` and `pnpm-lock.yaml` as t
 root wins a duplicate id: a shipped preset shadows any directory that claimed its name"（`:125-128`）。
 所以 `~/.dsh/.agent-presets/liangshen` 会被同名的随包 preset 盖掉：要改就改随包那份（并在下次升级后重跑安装
 脚本），或者给自建 preset 换一个 id。
+
+### 8.7 为什么最后落成"自成一页的设置分区"（v0.8.1）
+
+§8.5 的结论是"没得选，只能去插件页"。这一节记的是**为什么最终不接受那个答案**，以及第三处注册的
+机制、代价与边界。
+
+**上游决定**：`90af3110b7`（细节见 §8.5）把插件配置搬去侧栏插件页、删掉老渲染方，架构笔记的原话是
+「插件页承载配置；设置只保留清单」「`settings.plugin.item` slot 退役」。也就是说，对新宿主而言
+"设置里改参数"这条路被官方**收走**了。
+
+**用户诉求**：升级后用户的原话是"不能设置那些参数了…你应该和插件同级按钮"。他原来那张卡片在
+**设置 → 内置插件 →「配置」标签页**里；上游给的替代路径是"去插件页 → 找到本包 → 进详情" ——
+多两级导航，而且它只在插件页真的列出本包时才存在（§8.5 的第二处静默失败：只列
+`installed || optional || error` 的 bundle，`installed` 的判据是 profile `dependencies` 含包名）。
+
+**为什么 `settings.section` 是正解**：
+
+- **它是官方给插件的一等公民位置**，核心分区与第三方插件都走它。官方同位的 order 序列：
+  `general` 0（`packages/client/ui-settings-general/src/client/index.ts:187`）、
+  `models` 10（`packages/client/ui-settings-models/src/client/index.ts:131`）、
+  `plugins` 15（`packages/client/ui-settings-plugins/src/client/index.ts:187`）、
+  `agent-presets` 20（`packages/client/ui-agent-preset/src/client/index.ts:215`）、
+  `archived-sessions` 25（`packages/client/ui-settings-unarchive-sessions/src/client/index.ts:41`）。
+  本机已装的站外插件同样登记在它上面：`dsh-cost-meter` 的「费用」order 30（`.../dsh-cost-meter/lib/client.js`）、
+  `dshmarket` 的「插件市场」order 40（`.../dshmarket/client/client.js`）—— 这两个包在 profile 的
+  `node_modules` 里、不在检出里，故只给 profile 相对路径，复查时按包名 grep 即可。
+- **与宿主版本无关**：0.1.5 与 0.1.6 都声明并渲染 `settings.section`。§8.5 的两处是"谁有宿主谁渲染"，
+  这一处是"**两代都有**"—— 不必再赌某个 keyed 槽位还存不存在，也不必跟着官方下一次搬迁再追一次。
+- **机制**：它是 **list** 槽位（`packages/client/ui-settings/src/client/contract/slots.ts:54`：
+  `'settings.section': { kind: 'list'; scope: 'root'; owner: SettingsSectionOwnerProps }`），
+  注册形状是 `id`（认领位置，也是渲染侧 `only` 过滤的键）+ `order`（排位）+ `label`（侧栏那一行文字），
+  **没有 `key`** —— 这正是它不能复用 `registerInto()` 的原因（见下）。
+- **壳只渲染内容列，标题必须自己画**：设置壳是
+  `renderSlot('settings.section', { close: onClose }, { only: active })`
+  （`packages/client/ui-settings-general/src/client/SettingsRoot.tsx:101`）—— 用户在设置里看到的
+  「内置插件」标题是**那个分区组件自己画的**，壳不给。所以我们的组件自带
+  `.dsh-ca-section`/`.dsh-ca-heading`/`.dsh-ca-intro`，尺寸照抄官方
+  `packages/client/ui-settings-plugins/src/client/PluginsSettingsSection.module.css` 的
+  `.section`（`gap: 12px`、`max-width: 760px`）/`.heading`（`18px/600`）/`.intro`（`13px`、tertiary 色）。
+
+**三处注册的分工**（`lib/client.js` 的 `apply()`）：
+
+| # | 槽位 | 槽位形状 | 注册键 | 组件 | 宿主 |
+|---|---|---|---|---|---|
+| 1 | `settings.section` | list | `id: 'compact-agents'` + `order: 26` + `label: '压缩与自动续写'` | `CompactAgentsSection`（自画标题 + 引言） | 设置侧栏，**两代都有**（主入口，v0.8.1 新增） |
+| 2 | `plugins.bundle.config` | keyed | `key: 'dsh-compact-agents'`（包名） | `CompactAgentsPanel`（`view: 'page'` 给正文、`'summary'` 给一行摘要；**不套卡片外壳**） | DSH ≥ 0.1.6 插件页 |
+| 3 | `settings.plugin.item` | keyed | `key: 'compact-agents'`（settings 命名空间） | `CompactAgentsCard`（可折叠卡片，头/箭头/收起自己画） | DSH ≤ 0.1.5 设置页 |
+
+三处共用**同一个** `CompactAgentsCardController` 与**同一份** `formBody`，所以字段集合、生效时机题注、
+"已覆盖/重置"语义与保存行为逐项相同 —— 同屏出现两份，也只是同一份状态被渲染了两次，不会出现两个值。
+
+**失败隔离**：list 槽位的形状与 keyed 不同（`id`/`order`/`label`，没有 `key`），所以新增了一个
+`registerSection()`；`registerSection()` 与 `registerInto()` 都把 `slots.inject(...)` 与 `register(...)`
+各自包 try/catch，失败只 `console.warn` 一行并返回空 disposer。`scripts/client-test.mjs` 对**三个方向**
+各锁一条（让任一处抛，断言另外两处仍注册上），见 §4。
+
+**代价与限制**（照实写）：
+
+- 三个宿主同屏时**可能看到两份内容相同的表单**（设置分区 + 插件页详情）。值完全一致（共用控制器），
+  但观感上重复 —— 这是"不赌槽位"换来确定性的代价。
+- `order: 26` 是**位置选择，不是契约**：排在官方 25（已归档会话）之后、第三方（费用 30、插件市场 40）
+  之前。官方若再插入新的核心分区，我们的排位会跟着挪，功能不受影响。
+- 分区组件的 owner props 只有 `{ close }`（关闭设置面板，`packages/client/ui-settings/src/client/contract/slots.ts:123-126`
+  的 `SettingsSectionOwnerProps`），我们**用不上**，因此不自画关闭按钮；与插件页那份的差别也仅剩"谁画标题"。
+- **与 §8.5 的关系**：那两条静默失败分析仍然成立 —— 老槽位依旧没有任何渲染方；插件页那条过滤条件
+  依旧会静默吞掉"半装"的 bundle。`settings.section` 只是让这两条不再是**唯一**出路。
 
 ## 9. 压缩参数的机制与调参取舍
 
