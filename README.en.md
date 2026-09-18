@@ -6,7 +6,7 @@
 
 Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **Thresholds and friends are editable on their own Settings page** · No network, no dependencies; the browser half is hand-written with no build step
 
-[![version](https://img.shields.io/badge/version-0.8.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 **v0.8.1**: the parameter form is back where it belongs — **Settings → `Compaction & auto-continue`**, a section at the **same level** as `Plugins` / `Agent presets`. DSH 0.1.6 had moved plugin configuration onto the sidebar Plugins page and retired the old `settings.plugin.item` slot, so our card first vanished (with no error — `slots.inject` is silent for a slot nobody declares), and even after hanging the form inside the Plugins page you had to walk "Plugins page → find this package → open its detail page" to change a parameter. It now registers the official `settings.section` slot as a page of its own, while keeping the Plugins page and the old settings page as well — all three share one body of markup and one controller. The previous release also fixed a second silent failure: a package registered only in `dsh.profile.bundles` and not in the profile's `dependencies` is filtered out of the Plugins page entirely. See [design notes §8.5](docs/design.md) and [§8.7](docs/design.md).
 
@@ -310,13 +310,15 @@ plugin **sends "继续" on the user's behalf** so the conversation keeps going i
 > what this plugin provides is the **model-side** tool `compact_agents`, which the model calls — it is not
 > something a human clicks.
 
+The form groups the fields by **when they take effect** — three groups, and the field names are exactly the ones on the card:
+
 | Field | Meaning | Takes effect |
 |---|---|---|
-| Compaction trigger ratio | `0.35` = compact once the context reaches 350K | **New sessions** |
-| Retained ratio | how much recent history survives a compaction | **New sessions** |
+| Compaction notices | whether to announce *compacting context… / compaction done* in the conversation, with the shadowed node count and estimated tokens | **Immediately** |
+| Auto-continue budget | how many automatic `continue` turns after an output-cap truncation (0 = off) | **Immediately** |
+| Compaction trigger ratio | `0.35` = compact once the context reaches 350K | **Hot-synced on save** (and written to the preset for sessions created later) |
+| Retained ratio | how much recent history survives a compaction | **Hot-synced on save** (same) |
 | Controlled-phase output budget | the per-request output budget during the `controlled` phase, re-entered after every compaction | **New sessions** |
-| Compaction notices | whether to announce *compacting context… / compaction done* in the conversation | Immediately |
-| Auto-continue budget | how many automatic `continue` turns after an output-cap truncation (0 = off) | Immediately |
 
 The form also marks the fields **you have overridden**, each with its own `Reset`.
 
@@ -324,10 +326,11 @@ What the card looks like on older versions is shown in the annotated screenshot 
 
 The form can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that the UI shows neither the namespace nor the form — with no error at all. **It also has to be in the profile's `dependencies`**, or the new Plugins page filters it out entirely. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md) and [§8.5](docs/design.md)).
 
-Why two different effect timings:
+Why three groups:
 
-- The first three values **belong to other preset plugins** (`compaction-basic` owns `thresholdRatio`/`retainRatio`, `tool-bootstrap` owns `bootstrapMaxTokens`). This plugin cannot change their runtime policy, so it writes the **preset files themselves**. A preset mount records a file stamp, and a changed stamp starts the next generation **for sessions created afterwards** — so no DSH restart is needed, but already-running sessions are unaffected. Before writing it keeps a `<preset>.bak-compact-agents` copy and replaces the file atomically (temp file + rename); only the target line changes, so comments and formatting survive.
-- The last two values **belong to this plugin** and are read at event time, so they apply immediately.
+- **The two "immediately" values belong to this plugin** and are read at event time, so they apply as soon as you save.
+- **The middle two (trigger ratio / retained ratio) are written to the preset file but hot-synced on save** into running sessions: the new value goes straight into the live instance and is used at the next step boundary. If the hot sync cannot get in, the compaction notice says so itself — "this session is still on the old value, open a new conversation" — instead of pretending it worked (see [Compaction notices in the conversation](#compaction-notices-in-the-conversation)).
+- **The last one (controlled-phase output budget) belongs to another preset plugin** (`tool-bootstrap`). This plugin cannot change its runtime policy, so it only writes the **preset file itself**: a preset mount records a file stamp, and a changed stamp starts the next generation **for sessions created afterwards** — no DSH restart needed, but already-running sessions are unaffected. Before writing it keeps a `<preset>.bak-compact-agents` copy and replaces the file atomically (temp file + rename); only the target line changes, so comments and formatting survive.
 
 > `settings: false` turns the whole Settings surface off (the tool and the notices are unaffected).
 
@@ -542,6 +545,8 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **A preset shipped inside a package gets rewritten by that package's own upgrade**: the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` was inserted at install time, and a plugin upgrade rewrites the whole file (hit for real: after `@linxin666/dsh-liangshen` upgraded, its default preset no longer had the `compact-agents` row — and a user-created `~/.dsh/.agent-presets/liangshen` is **shadowed** by the same-id preset shipped in the package, because `agent-presets`' roots order is "shipped package first, user directory last" and the first wins on an identical id). Re-run `node scripts/install.mjs` after such an upgrade; `node scripts/validate-presets.mjs` will tell you which one went missing first.
 
 ## Changelog
+
+- **v0.8.2** — **documentation correction, no code change**: the form groups its fields by **when they take effect** (immediately / hot-synced into the preset / new sessions only), but the table under "Editing these parameters in the UI" still described the pre-v0.7.0 behaviour — it listed the **trigger ratio and retained ratio** as "new sessions", even though saving them hot-syncs into running sessions. The field names did not match the card word for word either. The table now mirrors the card exactly (`Compaction notices`, `Auto-continue budget`, and the three groups), and "why two different effect timings" became "why three groups": this plugin's own two values are read at event time, the trigger/retained ratios are written to the preset *and* hot-synced into running sessions, and the controlled-phase output budget belongs to another plugin, so it only edits the preset file for sessions created later.
 
 - **v0.8.1** — **the parameter form moved back to a page of its own in Settings**: a new registration into the official `settings.section` slot (`id: compact-agents`, `order: 26`, sidebar label `Compaction & auto-continue`), so it now sits at the **same level** as `General` / `Models` / `Plugins` / `Agent presets` — a position independent of the host version (present on 0.1.5 and 0.1.6 alike) and reachable without first digging into the Plugins page. All three registrations share one body of markup (`formBody`) and one controller, each wrapped in its own `try/catch`, so one failing does not affect the other two. Background in v0.8.0: after upstream moved plugin configuration to the Plugins page, the old `settings.plugin.item` slot had no renderer left, and the requirement was explicit — "put it at the same level as Plugins", not nested inside the Plugins page.
 
