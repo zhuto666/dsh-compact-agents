@@ -47,7 +47,14 @@ for (const file of presets) {
     }
     if (!Array.isArray(group.config)) throw new Error('compaction.config 不是列表')
     const mine = group.config.find(row => row?.id === ROW_ID)
-    if (mine === undefined) throw new Error(`compaction 组内缺少 ${ROW_ID} 行`)
+    if (mine === undefined) {
+      // 随包发行的 preset（`@linxin666/*/presets/`）被它自己的插件升级重写时会丢掉我们这行 ——
+      // 用户自建的 preset 一般不会自己消失。两者都算失败，但修法要说清楚。
+      const shipped = file.includes(`${path.sep}node_modules${path.sep}`)
+      throw new Error(shipped
+        ? `${ROW_ID} 行被发行包重写掉了（这个 preset 随 @linxin666/* 包发行）—— 重跑 node scripts/install.mjs 补回`
+        : `compaction 组内缺少 ${ROW_ID} 行 —— 重跑 node scripts/install.mjs 补回`)
+    }
     if (!fs.existsSync(mine.name)) throw new Error(`引用的文件不存在: ${mine.name}`)
     if (mine.name.replace(/\\/g, '/') !== PLUGIN_ENTRY) {
       throw new Error(`引用的不是本项目入口: ${mine.name}`)
@@ -84,6 +91,37 @@ for (const name of ['README.md', 'README.en.md']) {
     continue
   }
   console.log(`${name}: 版本徽章 ${badge[1]} == package.json`)
+}
+
+// ── profile 侧的"半装"状态 ─────────────────────────────────────────────
+// 新版插件页（侧栏「插件」）只列 `installed || optional || error` 的 bundle，而
+// `installed` 的判据是**profile 的 `dependencies` 里有没有这个包名**
+// （`packages/boot/plugin-manager/src/index.ts` 的 `listBundles()`）。
+// 于是"只写进 `dsh.profile.bundles`、没写进 `dependencies`"是一种**静默失败**：
+// 宿主照常加载、preset 跑得好好的，但插件页里根本看不到它 —— 2026-09-17 上游把插件配置
+// 从设置页搬到插件页后，我们的插件就是这么消失的。这个状态不该靠人记得，让它自动失败。
+//
+// profile 不存在（别人机器上没装过 / CI）时只 SKIP：这里校验的是"装了就得装对"。
+const profileArg = process.argv.indexOf('--profile')
+const profileName = profileArg === -1 ? (process.env.DSH_PROFILE ?? 'web') : process.argv[profileArg + 1]
+const profileManifest = path.join(DSH_HOME, 'profiles', profileName, 'package.json')
+if (!fs.existsSync(profileManifest)) {
+  console.log(`profile ${profileName}: 没有 profile package.json —— 跳过 profile 校验`)
+} else {
+  const manifest = JSON.parse(fs.readFileSync(profileManifest, 'utf8'))
+  const bundleListed = (manifest.dsh?.profile?.bundles ?? []).includes('dsh-compact-agents')
+  const dependencySpec = manifest.dependencies?.['dsh-compact-agents']
+  const label = `profile ${profileName}`
+  if (!bundleListed && dependencySpec === undefined) {
+    console.log(`${label}: 未安装本插件 —— 跳过 profile 校验`)
+  } else if (dependencySpec === undefined) {
+    failed += 1
+    console.log(`FAIL ${label}: 在 dsh.profile.bundles 里但不在 dependencies 里 —— 新版插件页会整条过滤掉它`)
+    console.log('     修：node scripts/install.mjs（会补 dependencies）或 dsh plugin add <本项目目录> --profile ' + profileName)
+  } else {
+    console.log(`${label}: dependencies["dsh-compact-agents"] = ${dependencySpec}${bundleListed ? '（也在 dsh.profile.bundles 里）' : ' ⚠ 不在 dsh.profile.bundles 里，重启后卡片/表单不出现'}`)
+    if (!bundleListed) failed += 1
+  }
 }
 
 console.log(failed === 0 ? `ALL OK (${checked} preset mounted)` : `${failed} FAILED`)

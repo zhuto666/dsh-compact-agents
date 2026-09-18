@@ -91,6 +91,34 @@ function unregisterProfileBundle(manifestPath, packageName, dryRun) {
   return `removed  ${label} -= ${packageName}`
 }
 
+/**
+ * 从 profile 的 `dependencies` 里摘掉本包。
+ *
+ * 与 `install.mjs` 的 `registerProfileDependency` 对称：同样是行级文本手术，
+ * 保留原排版，写前留 `.bak-compact-agents`。没找到就原样返回 —— 卸载要幂等。
+ *
+ * @param manifestPath - profile 的 package.json 路径。
+ * @param packageName - 要摘掉的包名。
+ * @param dryRun - 只报告时不动盘。
+ * @returns 一行人类可读的结果。
+ */
+function unregisterProfileDependency(manifestPath, packageName, dryRun) {
+  const label = manifestPath.replace(`${DSH_HOME}${path.sep}`, '')
+  let original
+  try {
+    original = fs.readFileSync(manifestPath, 'utf8')
+  } catch (error) {
+    return `WARN     ${label} 读取失败: ${error.message}`
+  }
+  const escaped = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const line = new RegExp(`\\n[ \\t]*"${escaped}"\\s*:\\s*"[^"]*",?`)
+  if (!line.test(original)) return `ok       ${label} (dependency not listed)`
+  if (dryRun) return `remove   ${label} -= ${packageName}`
+  fs.writeFileSync(`${manifestPath}.bak-compact-agents`, original)
+  fs.writeFileSync(manifestPath, original.replace(line, ''))
+  return `removed  ${label} -= ${packageName}`
+}
+
 // `--force` / `--profile` 先自己摘掉，再把剩下的交给 parseCommonArgs。
 // 这里有两个必须记住的坑，都是真实踩过的：
 //   1. 下标必须和传进去的那个数组同一套编号（都是 slice(2) 之后的），不能混用 process.argv 的下标；
@@ -123,11 +151,17 @@ console.log('  ' + removeJunction(
   path.join(DSH_HOME, 'profiles', profile, 'node_modules', 'dsh-compact-agents'),
   options.dryRun,
 ))
+console.log('  ' + unregisterProfileDependency(
+  path.join(DSH_HOME, 'profiles', profile, 'package.json'),
+  'dsh-compact-agents',
+  options.dryRun,
+))
 console.log('  ' + unregisterProfileBundle(
   path.join(DSH_HOME, 'profiles', profile, 'package.json'),
   'dsh-compact-agents',
   options.dryRun,
 ))
 console.log('')
-console.log('done — 重启 dsh 后设置页那张卡片消失；新开一条对话后 compact_agents 即不再出现；')
+console.log('done — 重启 dsh 后侧栏「插件」里不再有 dsh-compact-agents（旧版 dsh 是设置页那张卡片消失）；')
+console.log('       新开一条对话后 compact_agents 即不再出现；')
 console.log('       preset 与 profile package.json 的 .bak-compact-agents 备份未删除。')

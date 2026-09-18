@@ -312,15 +312,23 @@ bundleExports.apply(ctx)
 check('apply binds the compact-agents settings namespace',
   boundSpecs.length === 1 && boundSpecs[0].namespace === 'compact-agents',
   JSON.stringify(boundSpecs.map(spec => spec.namespace)))
-check('apply contributes through slots.inject("settings.plugin.item")',
-  injectCalls.length === 1 && injectCalls[0] === 'settings.plugin.item', injectCalls.join(', '))
-check('registration targets settings.plugin.item', registrations[0]?.options?.name === 'settings.plugin.item')
-check('registration key is the settings namespace (option spelled "key", not "entryKey")',
-  registrations[0]?.options?.key === 'compact-agents' && !('entryKey' in (registrations[0]?.options ?? {})),
-  JSON.stringify(registrations[0]?.options))
-check('card component is a function', typeof registrations[0]?.component === 'function')
+/** 按槽位名找一条注册（两个宿主各一条）。 */
+const regBySlot = name => registrations.find(entry => entry.options?.name === name)
+const cardReg = regBySlot('settings.plugin.item')
+const panelReg = regBySlot('plugins.bundle.config')
+check('apply subscribes to both hosts (old settings page + new Plugins page)',
+  injectCalls.includes('settings.plugin.item') && injectCalls.includes('plugins.bundle.config'),
+  injectCalls.join(', '))
+check('老设置页：注册键是 settings 命名空间（字段名是 "key"，不是 "entryKey"）',
+  cardReg?.options?.key === 'compact-agents' && !('entryKey' in (cardReg?.options ?? {})),
+  JSON.stringify(cardReg?.options))
+check('新插件页：槽位是 plugins.bundle.config，注册键是包名',
+  panelReg?.options?.key === 'dsh-compact-agents', JSON.stringify(panelReg?.options))
+check('both hosts receive a component function',
+  typeof cardReg?.component === 'function' && typeof panelReg?.component === 'function')
 
-const face = registrations[0].options.inject()
+const face = cardReg.options.inject()
+const panelFace = panelReg.options.inject()
 check('inject face carries actions edit/resetField/save/discard',
   ['edit', 'resetField', 'save', 'discard'].every(name => typeof face[name] === 'function'),
   Object.keys(face).join(', '))
@@ -331,7 +339,9 @@ check('inject face carries a snapshot store under hooks.compactAgentsCard',
 // ---------------------------------------------------------------------------
 // 4. 渲染：注入面折成渲染器会给的 props（hooks → useCompactAgentsCard）。
 // ---------------------------------------------------------------------------
-const cardComponent = registrations[0].component
+const cardComponent = cardReg.component
+/** 新插件页的组件：只渲染表单主体，不许自带卡片外壳（页自己画标题与面包屑）。 */
+const panelComponent = panelReg.component
 
 /**
  * 把注入面折成组件 props，等价于渲染器的绑定。
@@ -573,6 +583,111 @@ scope.setWritable(true)
 // 4i. effect 注册了释放回调（HMR / 卸载时解订阅）。
 check('apply registers a disposer through ctx.effect',
   effects.length === 1 && typeof effects[0] === 'string', effects.join(', '))
+
+// ---------------------------------------------------------------------------
+// 5. 新插件页（侧栏「插件」）那份表单：同一份正文，但不许自带卡片外壳。
+//    上游 90af3110b7 把插件配置搬到插件页后，老槽位没有任何渲染方 —— 只注册老槽位
+//    就是"卡片凭空消失且毫无报错"。这一节锁住新槽位的形状。
+// ---------------------------------------------------------------------------
+/**
+ * 渲染新插件页里的表单。
+ * @param props - 面板 props（`view` + 注入面）。
+ * @returns `{markup, element}`。
+ */
+function renderPanel(props) {
+  if (realReact !== undefined && realServer !== undefined) {
+    const element = realReact.module.createElement(panelComponent, props)
+    return { markup: realServer.module.renderToStaticMarkup(element), element }
+  }
+  return { markup: undefined, element: panelComponent(props) }
+}
+
+/**
+ * 深度收集元素树里的 className。
+ * @param node - React 元素 / 字符串 / 数组。
+ * @param out - 累加器。
+ * @returns className 列表。
+ */
+function collectClasses(node, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const child of node) collectClasses(child, out)
+    return out
+  }
+  if (typeof node.props?.className === 'string') out.push(node.props.className)
+  collectClasses(node.props?.children, out)
+  return out
+}
+
+const panelText = rendered => textOf(rendered)
+const panelMarkupOrClasses = rendered => rendered.markup ?? collectClasses(rendered.element).join(' ')
+
+const panelReady = renderPanel({ ...faceView(panelFace), view: 'page' })
+check('插件页表单：五个字段、两组时机题注与保存/放弃都在',
+  LABELS.every(label => panelText(panelReady).includes(label))
+  && panelText(panelReady).includes('保存') && panelText(panelReady).includes('放弃修改'),
+  panelText(panelReady).replace(/\s+/g, ' ').slice(0, 160))
+check('插件页表单：不画自己的卡片外壳（没有 dsh-ca-card / dsh-ca-header / 箭头）',
+  !panelMarkupOrClasses(panelReady).includes('dsh-ca-card')
+  && !panelMarkupOrClasses(panelReady).includes('dsh-ca-header')
+  && !panelMarkupOrClasses(panelReady).includes('dsh-ca-chevron'),
+  panelMarkupOrClasses(panelReady).slice(0, 160))
+check('插件页表单：正文容器是 dsh-ca-page',
+  panelMarkupOrClasses(panelReady).includes('dsh-ca-page'))
+const panelControls = collectControls(panelReady.element)
+check('插件页表单：两个枚举字段仍是下拉框',
+  panelReady.markup === undefined
+    ? panelControls.filter(control => control.tag === 'select').length === 2
+    : (panelReady.markup.match(/<select/g) ?? []).length === 2)
+check('插件页表单：与卡片共用同一个控制器（改一处两端一致）',
+  panelFace.hooks?.compactAgentsCard === face.hooks?.compactAgentsCard)
+
+const panelSummary = renderPanel({ ...faceView(panelFace), view: 'summary' })
+check('插件页列表项要一行摘要时给出一行（触发阈值 + 保留比例）',
+  panelText(panelSummary).includes('压缩触发阈值比例')
+  && panelText(panelSummary).includes('压缩后保留比例')
+  && !panelText(panelSummary).includes('放弃修改'),
+  panelText(panelSummary).replace(/\s+/g, ' ').slice(0, 120))
+
+scope.setStatus('loading')
+const panelPending = renderPanel({ ...faceView(panelFace), view: 'page' })
+check('插件页表单：命名空间未就绪时只留一句提示，不抛异常',
+  panelText(panelPending).includes('设置尚未就绪'))
+scope.setStatus('ready')
+
+// 5b. 一个槽位注册失败不能连累另一个（重复注册会抛，版本差异也可能抛）。
+const warnings = []
+const originalWarn = console.warn
+console.warn = message => { warnings.push(String(message)) }
+try {
+  const isolate = (failingSlot) => {
+    const fresh = registration.factory(stubRequire)
+    const seen = []
+    fresh.apply({
+      settingsScope: { bind: () => scope },
+      slots: {
+        inject(name, contribute) { return contribute() },
+        register(options) {
+          if (options.name === failingSlot) throw new Error('client-test: injected slot failure')
+          seen.push(options.name)
+          return () => {}
+        },
+      },
+      effect: factory => factory(),
+    })
+    return seen
+  }
+  const withoutPanel = isolate('plugins.bundle.config')
+  check('新槽位注册失败时，老设置页那张卡仍然注册上',
+    withoutPanel.includes('settings.plugin.item') && warnings.length > 0,
+    `${withoutPanel.join(', ')} | warn: ${warnings[0] ?? '(none)'}`)
+  const withoutCard = isolate('settings.plugin.item')
+  check('老槽位注册失败时，插件页那份表单仍然注册上',
+    withoutCard.includes('plugins.bundle.config'),
+    withoutCard.join(', '))
+} finally {
+  console.warn = originalWarn
+}
 
 console.log(failed === 0 ? '\nALL OK' : `\n${failed} failure(s)`)
 process.exit(failed === 0 ? 0 : 1)

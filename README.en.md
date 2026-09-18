@@ -4,11 +4,11 @@
 
 **Plugin for DeepSeek Harness: force-compact session context from the model itself (`compact_agents`)**
 
-Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **Thresholds and friends are editable in Settings** · No network, no dependencies; the browser half is hand-written with no build step
+Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members alike) · The main session can compact itself even with no sub-agents · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · Only a top-level agent may sweep, sub-agent overreach is refused · Serial (non-concurrent) tool scheduling · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **Thresholds and friends are editable on the sidebar Plugins page** · No network, no dependencies; the browser half is hand-written with no build step
 
-[![version](https://img.shields.io/badge/version-0.7.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.3.0**: compaction is visible in the conversation, and a turn truncated by the output cap continues itself. The plugin supplies the model-side manual compaction entry point DSH was missing — `/compact` only serves interactive UI adapters, headless sub-agents and team members have no command surface, and a captain had no tool to compact them — and it now leaves a **visible notice for both automatic and manual compaction** ("Compacting context…", "~213,400 → ~49,800 tokens"). See the [design notes](docs/design.md).
+**v0.8.0**: DSH 0.1.6 moved plugin configuration out of Settings onto a new sidebar **Plugins page**, and it squeezed our card out of existence on the way — the old `settings.plugin.item` slot now has **no renderer at all**, and registering into it reports nothing. This release occupies both slots (the new `plugins.bundle.config`, keyed by **package name**, and the old `settings.plugin.item`, keyed by namespace) and registers the package in the profile's `dependencies` — the Plugins page lists only bundles that are `installed || optional || error`, and `installed` is exactly that check. The five parameters and the two activation timings are unchanged. See [design notes §8.5](docs/design.md).
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -34,6 +34,8 @@ Force compaction ignoring the automatic threshold · Covers **every live session
 | Serial scheduling | — | Registered as fail-closed `exclusive`: one sweep never runs alongside another call that might compact the same session. Timeout 30 minutes (queued work runs after the turn and is not covered by it) |
 | Automatic threshold (companion) | `compaction-basic` config | This plugin does **not** change automatic policy; the installer also reports `thresholdRatio` (the DSH default 0.8 × 1M = 800K effectively never fires; the default is 0.35, i.e. 350K) |
 | **Compaction is visible in the conversation** | on by default; `notice: false` turns it off | Subscribes to `session/event`: the moment `compaction/start` lands, one plugin-sourced `user/message` is appended to the surface tail, and the client renders it as a collapsed "Context injection · dsh-compact-agents" row — *Compacting context… (currently 213,400 tokens) · trigger line ×0.35* while running, *Context compacted: ~213,400 → ~49,800 tokens, 37 history nodes shadowed* when done. `compaction/start` is written **before** the summarization model call, so the notice covers exactly the wait that used to look frozen. **The notice reports the trigger line this session actually runs**; if hot-syncing ever fails, both values and the "a new conversation picks it up" fix are stated right there |
+| **Auto-continues after an output-cap truncation** | on by default; `maxAutoContinues` (default 2; `0` / `false` disables) | When a turn ends with `turn/end{reason: 'max-tokens'}`, it sends "继续" on the user's behalf (`agent.followup`, the same path a message typed in the UI takes) so the conversation keeps itself going. The consecutive count is bounded, and any normally completed turn resets it, so it cannot burn tokens forever |
+| **Editable in the UI** | on by default; `settings: false` disables it | Registers the `compact-agents` settings namespace, and the browser half provides a form on the sidebar **Plugins page** (on DSH ≤ 0.1.5: **Settings → Plugins**): compaction trigger ratio, retained ratio, controlled-phase output budget, the compaction-notice toggle and the auto-continue budget — all five editable in the UI, with no need to edit the preset YAML |
 
 ## Why it is needed
 
@@ -70,9 +72,11 @@ The script does the following, and is **idempotent**:
       name: '/absolute/path/to/dsh-compact-agents/index.js'   # the installer fills in your real absolute path
 ```
 
-3. **Registers this package in the host composition** (the browser half — the Settings card — relies on it): it creates a `dsh-compact-agents` junction under `<DSH_HOME>/profiles/<profile>/node_modules/` pointing at this repository, and adds `dsh-compact-agents` to that profile's `dsh.profile.bundles` in `package.json` — so the host Loader gains a `compact-agents-client-host` row (injected by this package's `dsh.bundle.patch` → `cordis.patch.yml`, entry `client-host.js`). Pick the profile with `--profile <name>`, default `web`; a `<package.json>.bak-compact-agents` copy is written first.
+3. **Registers this package in the host composition** (the browser half — that configuration form — relies on it): it creates a `dsh-compact-agents` junction under `<DSH_HOME>/profiles/<profile>/node_modules/` pointing at this repository, and adds `dsh-compact-agents` to that profile's `dsh.profile.bundles` in `package.json` — so the host Loader gains a `compact-agents-client-host` row (injected by this package's `dsh.bundle.patch` → `cordis.patch.yml`, entry `client-host.js`). **It also writes the package into the same `package.json`'s `dependencies`** (`link:<absolute path to this repository>`): the new Plugins page lists only bundles that are `installed || optional || error`, and `installed` means the package name is in `dependencies` — without that step the page **omits it entirely, and reports nothing**. Pick the profile with `--profile <name>`, default `web`; a `<package.json>.bak-compact-agents` copy is written before that `package.json` is touched.
 
-**Restart `dsh` once after installing**: the host composition changed (the profile gained a bundle), and only after that restart does the card appear under **Settings → Plugins**. Afterwards, changing only preset parameters needs no restart (see "Activation").
+   This step **tries the official channel first** — `dsh plugin add <absolute path to this repository> --profile <profile>` (it does the dependency, the bundle registration and the actual install in one go) — and falls back to the hand-written registration above when it fails or when `--no-cli` was passed.
+
+**Restart `dsh` once after installing**: the host composition changed (the profile gained a bundle), and only after that restart do `dsh-compact-agents` and its configuration form appear on the sidebar **Plugins page** (on DSH ≤ 0.1.5 they live under **Settings → Plugins**). Afterwards, changing only preset parameters needs no restart (see "Activation").
 
 It auto-discovers `$DSH_HOME/.agent-presets/*/agent.cordis.yml` and `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`; use `--preset <file>` to name files explicitly. A `.bak` backup is written before any edit, and presets without a `compaction` group are skipped.
 
@@ -108,7 +112,9 @@ The two mount points are **both required**; each covers half the job:
 | The preset row | the `compact-agents` row in the `compaction` group of `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` (an absolute path pointing at this repository's `index.js`) | the `compact_agents` tool, the compaction notices, and auto-continue after an output-cap truncation. It **must stay inside the `compaction` realm**: cordis isolation is keyed by service name, so outside the realm `ctx.compaction` cannot be resolved |
 | The bundle row in the host composition | the profile's `dsh.profile.bundles` lists this package → this package's `dsh.bundle.patch` points at `cordis.patch.yml` → it inserts `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'` (entry `client-host.js`) | lets DSH's client module table discover this package's `dsh.client` declaration (and therefore ship `lib/client.js` to the browser), and registers the settings namespace on the host root |
 
-**Mounting it in the preset alone is not enough**: DSH's `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) decides which client bundles reach the browser and it **only walks the host Loader's entries** — its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`, whose comment says outright that a plugin with no `fiber.entry` is a child plugin or a manual mount, and drops it; the constructor likewise only does `for (const entry of ctx.loader.entries())`. The preset row is **manually mounted** by `agent-presets` through `internal.import`, so it is not a loader row. Therefore **with a preset-only install the browser half is never delivered**, and the symptom is that Settings shows neither the namespace nor the card — **with no error at all**. Root cause and source locations: [design notes §8.4](docs/design.md).
+**Mounting it in the preset alone is not enough**: DSH's `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) decides which client bundles reach the browser and it **only walks the host Loader's entries** — its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`, whose comment says outright that a plugin with no `fiber.entry` is a child plugin or a manual mount, and drops it; the constructor likewise only does `for (const entry of ctx.loader.entries())`. The preset row is **manually mounted** by `agent-presets` through `internal.import`, so it is not a loader row. Therefore **with a preset-only install the browser half is never delivered**, and the symptom is that the UI shows neither the namespace nor the form — **with no error at all**. Root cause and source locations: [design notes §8.4](docs/design.md).
+
+**Registering it as a bundle is still not enough** (as of v0.8.0): the new Plugins page (`packages/client/ui-plugin-manager`) lists only bundles with `pkg.installed || pkg.optional || pkg.error`, and `installed` is decided by the single line `dependencies.includes(name)` in `listBundles()` (`packages/boot/plugin-manager/src/index.ts`) — **a package that is written into `dsh.profile.bundles` but not into `dependencies` is filtered out entirely**, once again with no error. `install.mjs` now writes both; an older install that only wrote the bundle shows up as "the plugin is simply not on the Plugins page". See [design notes §8.5](docs/design.md).
 
 `client-host.js`, the root entry, deliberately declares `inject = []`: there is **no** `compaction` service on the host root (it is provided by `compaction-basic` inside the preset realm), so declaring that dependency would only leave the row pending forever. It does exactly two things: let the client module table discover this package, and register the settings namespace on the host root. Both entries call `registerSettings`, and a module-level cache keeps registration process-wide once (the real `SettingsProvider.register` throws on a duplicate namespace).
 
@@ -120,7 +126,7 @@ What you changed decides how it takes effect:
 
 | What changed | How it takes effect |
 |---|---|
-| **The host composition** (the bundle row added by the first install, `client-host.js`, `cordis.patch.yml`, the `dsh.*` declarations in `package.json`) | **A `dsh` restart is required** — only then does the card appear in Settings |
+| **The host composition** (the bundle row added by the first install, `client-host.js`, `cordis.patch.yml`, the `dsh.*` declarations in `package.json`) | **A `dsh` restart is required** — only after it does the plugin appear on the **Plugins page**; only older DSH versions show the card in Settings |
 | A preset's **compaction threshold / retention ratio** | **Effective on save**: this plugin hot-syncs the new value into running sessions (the next step boundary uses it) and writes the preset file for new sessions |
 | A preset's **controlled-phase output budget** (`tool-bootstrap`) and the **mount row** | **A new conversation** is enough; no restart |
 | The plugin's own `.js` | **A `dsh` restart is required** (ESM module cache; see "Local development") |
@@ -142,7 +148,7 @@ The row config `livePresetParams: false` turns hot-syncing off (back to the old 
 
 > **To compact the members you already have, do not restart DSH** — a restart drops every member/sub-agent session (`ctx.agents.list()` only covers live sessions), leaving nothing to compact. Opening a new conversation leaves them untouched.
 >
-> The first install therefore has an ordering conflict: "see the Settings card" and "do not lose member sessions" cannot both hold — compact first and then restart, or restart and re-open the members. The `compact_agents` tool itself does not depend on that restart: once the preset row is in place, a new conversation is enough.
+> The first install therefore has an ordering conflict: "see the configuration UI" and "do not lose member sessions" cannot both hold — compact first and then restart, or restart and re-open the members. The `compact_agents` tool itself does not depend on that restart: once the preset row is in place, a new conversation is enough.
 
 ### Verifying the install
 
@@ -157,10 +163,14 @@ It reports the mount row's location per preset, whether the referenced file exis
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
   thresholdRatio = 0.35  retainRatio = 0.05
   compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (exists)
+README.md: version badge 0.8.0 == package.json
+profile web: dependencies["dsh-compact-agents"] = link:E:/dsh-compact-agents (also in dsh.profile.bundles)
 ALL OK (4 preset mounted)
 ```
 
-Which initial values the Settings card will show can be checked read-only (it writes no file at all):
+That `profile …` line is the guard added in v0.8.0: a package **registered in `dsh.profile.bundles` but missing from `dependencies`** fails outright and prints the fix — that is exactly the silent state in which the Plugins page shows no trace of the plugin (see the previous section). A preset shipped inside a package (any path containing `node_modules`) that is rewritten by that package's own upgrade and loses our mount row fails here too, with a pointer to re-run `node scripts/install.mjs`.
+
+Which initial values the form will show can be checked read-only (it writes no file at all):
 
 ```sh
 node scripts/inspect-presets.mjs
@@ -174,7 +184,7 @@ node scripts/uninstall.mjs --dry-run       # uninstall: preview first
 node scripts/uninstall.mjs                 # remove the mount row + the profile bundle entry + the junctions it created
 ```
 
-Uninstall removes only what it added: comments, `!!js` expressions and every other row in a preset are left alone (verified byte-for-byte round trip from installed back to original), and the bundle entry in the profile's `package.json` is removed line-wise with the original layout preserved. The plugin directory and the `.bak` / `.bak-compact-agents` backups are kept; remove them yourself. Uninstall changes the host composition too, so **the Settings card disappears only after a `dsh` restart**.
+Uninstall removes only what it added: comments, `!!js` expressions and every other row in a preset are left alone (verified byte-for-byte round trip from installed back to original), and the bundle entry in the profile's `package.json` is removed line-wise with the original layout preserved. The plugin directory and the `.bak` / `.bak-compact-agents` backups are kept; remove them yourself. Uninstall changes the host composition too, so **the configuration UI only disappears after a `dsh` restart**.
 
 ### Local development
 
@@ -250,7 +260,7 @@ lands exactly inside the wait that used to show nothing. The row config `notice:
 is unaffected).
 
 The `trigger line ×0.35` at the end of the collapsed row is **the value this session actually runs**. Normally it
-always matches the preset files — saving the card hot-syncs the new value into running sessions; only when that
+always matches the preset files — saving the settings hot-syncs the new value into running sessions; only when that
 fails does the row add one line:
 
 ```
@@ -281,15 +291,19 @@ plugin **sends "继续" on the user's behalf** so the conversation keeps going i
 > that budget and can consume all of it → zero visible output → the turn is reported as truncated. See
 > [design notes §7](docs/design.md).
 
-### Editing these parameters in Settings
+### Editing these parameters in the UI
 
-Open **Settings → Plugins** and you will find a `Compaction & auto-continue` card:
+**DSH ≥ 0.1.6**: open the sidebar's **Plugins page** → find `dsh-compact-agents` → open its detail page, and the `Compaction & auto-continue` form is right there (the page brings its own title and breadcrumb, so the form is nothing but the fields). The list row carries a one-line summary too — when it is off, that summary states the current threshold and retained ratio.
 
-![The `Compaction & auto-continue` card on the DSH Settings → Plugins page: 1 is the entry point, 2 is the card title, 3 is the two fields that take effect immediately, 4 is the three fields that apply to new sessions, 5 is Discard changes / Save at the bottom](docs/images/settings-card-annotated.png)
+**DSH ≤ 0.1.5**: it is still a collapsible `Compaction & auto-continue` card under **Settings → Plugins → Configurable**.
 
-> This card is a **pure parameter card**: the plugin has **no buttons of its own** in the UI — compaction and
-> auto-continue both happen **automatically**. The `Reset` next to a field is just the Settings framework's own
-> restore affordance and never triggers a compaction.
+![The `Compaction & auto-continue` card on the older Settings page: 1 is the entry point, 2 is the card title, 3 is the two fields that take effect immediately, 4 is the three fields that apply to new sessions, 5 is Discard changes / Save at the bottom](docs/images/settings-card-annotated.png)
+
+> The screenshot above is the **0.1.5-and-earlier** UI. The same component now registers into two slots at once (the new `plugins.bundle.config`, keyed by **package name**, and the old `settings.plugin.item`, keyed by the settings namespace); there is only one body of markup, so the two cannot drift — and the new side no longer wraps itself in a card shell, because the page already draws the title. The old image has not been replaced yet — capturing a new one requires restarting the GUI.
+
+> This form is a **pure parameter form**: the plugin has **no buttons of its own** in the UI — compaction and
+> auto-continue both happen **automatically**. The framework's own `Reset` is just a restore affordance and
+> never triggers a compaction.
 > The only manual compaction entry point in DSH is the **built-in** human command `/compact` (not this plugin);
 > what this plugin provides is the **model-side** tool `compact_agents`, which the model calls — it is not
 > something a human clicks.
@@ -302,11 +316,11 @@ Open **Settings → Plugins** and you will find a `Compaction & auto-continue` c
 | Compaction notices | whether to announce *compacting context… / compaction done* in the conversation | Immediately |
 | Auto-continue budget | how many automatic `continue` turns after an output-cap truncation (0 = off) | Immediately |
 
-The card also marks the fields **you have overridden**, each with its own `Reset`.
+The form also marks the fields **you have overridden**, each with its own `Reset`.
 
-What the card looks like is shown in the annotated screenshot above; the numbers in the image match the legend on its right. [docs/images](docs/images/README.md) records where these images come from and how they are made (real UI captures plus annotations, containing no personal information), along with the naming and placement rules for any future screenshot.
+What the card looks like on older versions is shown in the annotated screenshot above; the numbers in the image match the legend on its right. [docs/images](docs/images/README.md) records where these images come from and how they are made (real UI captures plus annotations, containing no personal information), along with the naming and placement rules for any future screenshot.
 
-The card can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that Settings shows neither the namespace nor the card — with no error at all. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md)).
+The form can only appear if **that row exists in the host composition** (this package registered as a profile bundle, and therefore inserted into the host Loader): with a preset-only mount the browser never receives `lib/client.js`, and the symptom is that the UI shows neither the namespace nor the form — with no error at all. **It also has to be in the profile's `dependencies`**, or the new Plugins page filters it out entirely. So **restart `dsh` after the first install and after any change to the host composition** (root cause in [design notes §8.4](docs/design.md) and [§8.5](docs/design.md)).
 
 Why two different effect timings:
 
@@ -454,13 +468,13 @@ dsh-compact-agents
 ├── client-host.js               # the host-composition entry: does exactly two things (ship the browser half, register the settings namespace)
 ├── cordis.patch.yml             # dsh.bundle.patch: inserts the compact-agents-client-host row into the host composition
 ├── settings.js                  # the Settings surface: settings namespace + preset parameter read/write (shared by both entries)
-├── lib/client.js                # the browser half: the Settings card (hand-written, no build step)
+├── lib/client.js                # the browser half: the Plugins-page configuration form + the older Settings card (one body of markup, hand-written, no build)
 ├── package.json                 # ESM package declaration (main -> index.js; dsh.client -> lib/client.js; dsh.bundle.patch -> cordis.patch.yml)
 ├── scripts/
 │   ├── lib/presets.mjs          # shared by the scripts: path constants + preset discovery (one definition)
-│   ├── install.mjs              # one-shot install/repair: junctions + preset row + profile bundle (idempotent, keeps .bak)
-│   ├── uninstall.mjs            # uninstall: remove the mount row + delete the junctions / bundle entry it created
-│   ├── validate-presets.mjs     # validate mount row / threshold / path
+│   ├── install.mjs              # one-shot install/repair: junctions + preset row + profile bundle and dependencies (idempotent, keeps .bak)
+│   ├── uninstall.mjs            # uninstall: remove the mount row + delete the junctions / bundle and dependency entries it created
+│   ├── validate-presets.mjs     # validate mount row / threshold / path / README badge / profile dependency
 │   ├── inspect-presets.mjs      # read-only self-check: the effective values read from the real presets
 │   ├── compose-test.mjs         # composition check: real FileSettingsProvider + replicated preset isolation (temp fixture only)
 │   ├── settings-test.mjs        # Settings surface test (real schemastery + preset text surgery)
@@ -488,9 +502,9 @@ dsh-compact-agents
 
 `client-host.js` deliberately declares `inject = []` — there is no `compaction` service on the host root (it is provided by `compaction-basic` inside the preset realm), so declaring that dependency would only leave the row pending forever. It does exactly two things: let the client module table discover this package, and register the settings namespace on the host root.
 
-**Why the preset alone is not enough**: `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) only walks the **host Loader's entries**, and its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` — a plugin with no `fiber.entry` ("a child plugin or a manual mount") is dropped; the preset row is exactly such a manual mount, created by `agent-presets` through `internal.import`, not a loader row. The result: with a preset-only install the browser half is never delivered, Settings shows neither the namespace nor the card, **and nothing is logged**. See [design notes §8.4](docs/design.md).
+**Why the preset alone is not enough**: `ClientModuleRegistry` (`packages/client/modules/src/index.ts`) only walks the **host Loader's entries**, and its `internal/plugin` listener contains `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` — a plugin with no `fiber.entry` ("a child plugin or a manual mount") is dropped; the preset row is exactly such a manual mount, created by `agent-presets` through `internal.import`, not a loader row. The result: with a preset-only install the browser half is never delivered, the UI shows neither the namespace nor the form, **and nothing is logged**. See [design notes §8.4](docs/design.md).
 
-The plugin imports `defineTool` (from `@deepseek-ai/dsh-tools`) and **dynamically** imports `@deepseek-ai/schemastery` to declare its settings schema. The latter two junctions are needed only by the Settings surface and the tests; **a missing `schemastery` junction costs you one settings card, never the plugin** (the dynamic import only logs a warning).
+The plugin imports `defineTool` (from `@deepseek-ai/dsh-tools`) and **dynamically** imports `@deepseek-ai/schemastery` to declare its settings schema. The latter two junctions are needed only by the Settings surface and the tests; **a missing `schemastery` junction costs you the settings surface, never the plugin** (the dynamic import only logs a warning).
 
 **Why the preset row must be an absolute path**: `agent-presets/src/specifier.ts` classifies an absolute drive-letter path through `pathToFileURL` (its comment says this is *"required for drive-letter paths on Windows"*), producing a `file:` row. A **bare package name inside a preset is resolved from the harness**, not from the caller's directory, so a package installed under the user directory would fail to resolve.
 
@@ -502,8 +516,8 @@ node scripts/selftest.mjs             # module import + defineTool spec + parame
 node scripts/deferred-test.mjs        # busy -> queued -> compacted on idle (fake ctx, no DSH)
 node scripts/integration-test.mjs     # real machine: real Context + real ToolRuntime, full chain
 node scripts/compose-test.mjs         # composition: real FileSettingsProvider + replicated preset isolation
-node scripts/inspect-presets.mjs      # read-only: the initial values the Settings card will show
-node scripts/validate-presets.mjs     # mount rows and thresholds of all presets
+node scripts/inspect-presets.mjs      # read-only: the initial values the form will show
+node scripts/validate-presets.mjs     # preset mount rows and thresholds + README badge + profile dependency
 node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 ```
 
@@ -522,8 +536,12 @@ node scripts/install.mjs --dry-run    # install rehearsal (touches nothing)
 - **Already-composed sessions do not get the new tool**: a preset edit only affects new sessions; older ones need a new conversation (or a DSH restart, which would drop member sessions).
 - **No orphan-data or state cleanup**: this plugin is stateless, so there is nothing to clean up.
 - **DSH dev-checkout layout only**: the installer requires the checkout to contain both `packages/core/tools` and `vendor/cordis`; a global `npm i -g` installation is unverified (the two packages land elsewhere and would need separate handling).
+- **The Plugins page's enable/disable switch only covers the browser half**: turning this plugin off on the Plugins page acts on the host-composition row (`compact-agents-client-host`) — the form no longer appears — while the `compact_agents` tool comes from the **preset row** and is unaffected by that switch, still mounting as usual. To disable the whole thing, run `node scripts/uninstall.mjs`.
+- **A preset shipped inside a package gets rewritten by that package's own upgrade**: the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` was inserted at install time, and a plugin upgrade rewrites the whole file (hit for real: after `@linxin666/dsh-liangshen` upgraded, its default preset no longer had the `compact-agents` row — and a user-created `~/.dsh/.agent-presets/liangshen` is **shadowed** by the same-id preset shipped in the package, because `agent-presets`' roots order is "shipped package first, user directory last" and the first wins on an identical id). Re-run `node scripts/install.mjs` after such an upgrade; `node scripts/validate-presets.mjs` will tell you which one went missing first.
 
 ## Changelog
+
+- **v0.8.0** — **keeping up with DSH 0.1.6's Plugins page**. Upstream `90af3110b7 feat(web): host plugin configuration on the Plugins page` moved plugin configuration out of Settings onto the new sidebar Plugins page (`ui-plugin-manager`), and the renderer for the old `settings.plugin.item` slot, `ConfigurablePluginsTab.tsx`, was deleted — so our card **vanished into thin air, with no error at all** (`ctx.slots.inject` is silent for a slot nobody declares: registering neither throws nor shows). The same body of markup now registers into both slots: the new `plugins.bundle.config` (keyed by **package name**) draws a form, the old `settings.plugin.item` (keyed by the settings namespace) draws a collapsible card; both share one controller and one body of markup, so they cannot drift, and one slot failing to register does not drag the other down. A second silent failure is fixed at the same time: the new Plugins page lists only bundles that are `installed || optional || error`, and `installed` means the package name is in the profile's `dependencies` — an older install that registered only `dsh.profile.bundles` is **filtered out entirely**. So `install.mjs` now writes both (preferring the official `dsh plugin add`, falling back to a line-level hand-written entry when it fails or `--no-cli` was passed; it keeps a `.bak-compact-agents` copy first and rolls back automatically on a bad write), and `validate-presets.mjs` fails outright on "in bundles but not in dependencies". `client-test.mjs` covers it accordingly: registration into both slots, the form shape (no card shell), the one-line list summary, degradation when the namespace is not ready, and slots not dragging each other down.
 
 - **v0.7.4** — the version badge at the top of the README now matches package.json, enforced by npm test. Spotted while checking the market listing: the badge still said 0.4.0 while package.json was 0.7.x, and the market reads the README, so that stale number was what visitors saw on dsh.market. A hand-maintained badge will be forgotten again, so validate-presets now fails when the two disagree.
 

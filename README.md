@@ -4,11 +4,11 @@
 
 **DeepSeek Harness 会话上下文强制压缩插件(模型可调用的 `compact_agents`)**
 
-强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在「设置」里直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
+强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在侧栏「插件」页里直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.7.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
-**v0.4.0**：所有压缩相关参数搬进「设置」界面。压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数 —— 五项都能在 **设置 → 插件** 里改，不用再编辑 preset 的 YAML；顺带补上「被输出上限截断时自动续写」，让对话不再停在"已达到输出 token 上限"。详见[设计说明](docs/design.md)。
+**v0.8.0**：DSH 0.1.6 把插件配置从「设置」搬到了侧栏新的**「插件」页**，顺手把我们那张卡片挤没了 —— 老槽位 `settings.plugin.item` 在新版里**没有任何渲染方**，注册上去也毫无报错。这一版同时占两个槽位（新版 `plugins.bundle.config` 用**包名**当键、老版 `settings.plugin.item` 用命名空间当键），并把本包登记进 profile 的 `dependencies` —— 插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据就是它。五项参数、两种生效时机一切照旧。详见[设计说明 §8.5](docs/design.md)。
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -35,7 +35,7 @@
 | 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；默认 0.35，即 350K 触发) |
 | **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）· 触发线 ×0.35*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待。**提示里会报出本会话实际生效的触发线**；万一热同步没成功，折叠行与正文会直接点明两个值与"新开一条对话才生效" |
 | **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
-| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在「设置 → 插件」里提供卡片：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
+| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在侧栏「插件」页（DSH ≤ 0.1.5 是「设置 → 插件」）里提供表单：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
 
 ## 为什么需要它
 
@@ -72,9 +72,11 @@ node scripts/install.mjs               # 确认后执行(profile 默认 web，�
       name: '/absolute/path/to/dsh-compact-agents/index.js'   # 安装脚本会自动填成你的真实绝对路径
 ```
 
-3. **把本插件登记进宿主组成**(浏览器 half、设置页那张卡片靠它)：在 `<DSH_HOME>/profiles/<profile>/node_modules/` 下建一个指向本仓库的 `dsh-compact-agents` 联接，并把 `dsh-compact-agents` 加进该 profile `package.json` 的 `dsh.profile.bundles` —— 宿主 Loader 于是多出一行 `compact-agents-client-host`(由本包的 `dsh.bundle.patch` → `cordis.patch.yml` 注入，入口 `client-host.js`)。profile 用 `--profile <name>` 指定，默认 `web`；改这个 `package.json` 前会留一份 `<package.json>.bak-compact-agents`。
+3. **把本插件登记进宿主组成**(浏览器 half、那张配置表单靠它)：在 `<DSH_HOME>/profiles/<profile>/node_modules/` 下建一个指向本仓库的 `dsh-compact-agents` 联接，并把 `dsh-compact-agents` 加进该 profile `package.json` 的 `dsh.profile.bundles` —— 宿主 Loader 于是多出一行 `compact-agents-client-host`(由本包的 `dsh.bundle.patch` → `cordis.patch.yml` 注入，入口 `client-host.js`)。**同时**把它写进同一个 `package.json` 的 `dependencies`（`link:<本仓库绝对路径>`）：新版插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据就是包名在不在 `dependencies` 里 —— 少了这一步，插件页里会**整条看不到它，且毫无报错**。profile 用 `--profile <name>` 指定，默认 `web`；改这个 `package.json` 前会留一份 `<package.json>.bak-compact-agents`。
 
-**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后「设置 → 插件」里才会出现那张卡片。之后只改 preset 里的参数就不必重启(见「生效」)。
+   这一步会**先试官方通道** `dsh plugin add <本仓库绝对路径> --profile <profile>`（它把依赖、bundle 登记与实际安装一次做完），失败或加了 `--no-cli` 时回落到上面的手写登记。
+
+**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后侧栏「插件」页里才会出现 `dsh-compact-agents` 与那张配置表单（DSH ≤ 0.1.5 在「设置 → 插件」里）。之后只改 preset 里的参数就不必重启(见「生效」)。
 
 自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
 
@@ -110,7 +112,9 @@ node scripts/install.mjs --force      # 旧路径还有效时也强制重新指�
 | preset 行 | `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 里 `compaction` 组的 `compact-agents` 行(绝对路径指向本仓库 `index.js`) | `compact_agents` 工具、压缩进度提示、被输出上限截断后的自动续写。**必须待在 `compaction` realm 内**：cordis 的隔离按服务名生效，realm 外解析不到 `ctx.compaction` |
 | 宿主组成里的 bundle 行 | profile 的 `dsh.profile.bundles` 登记本包 → 本包 `dsh.bundle.patch` 指向 `cordis.patch.yml` → 插入 `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'`(入口 `client-host.js`) | 让 DSH 的客户端模块表扫到本包的 `dsh.client` 声明(从而把 `lib/client.js` 下发给浏览器)，并在宿主根上注册 settings 命名空间 |
 
-**只挂 preset 是不够的**：DSH 的 `ClientModuleRegistry`(`packages/client/modules/src/index.ts`) **只遍历宿主 Loader 的 entries** 来决定给浏览器下发哪些客户端 bundle —— 它监听 `internal/plugin` 的那段里有一行 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`，注释明说"`fiber.entry` 为空的是子插件或手动挂载"，直接丢弃；构造时也只做 `for (const entry of ctx.loader.entries())`。而 preset 里的行是 `agent-presets` 用 `internal.import` **手动挂载**的、不是 loader 行。所以**只挂在 preset 里，浏览器 half 永远不会被下发**，症状是设置页里既没有命名空间也没有卡片、且**毫无报错**。根因与源码位置见[设计说明 §8.4](docs/design.md)。
+**只挂 preset 是不够的**：DSH 的 `ClientModuleRegistry`(`packages/client/modules/src/index.ts`) **只遍历宿主 Loader 的 entries** 来决定给浏览器下发哪些客户端 bundle —— 它监听 `internal/plugin` 的那段里有一行 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`，注释明说"`fiber.entry` 为空的是子插件或手动挂载"，直接丢弃；构造时也只做 `for (const entry of ctx.loader.entries())`。而 preset 里的行是 `agent-presets` 用 `internal.import` **手动挂载**的、不是 loader 行。所以**只挂在 preset 里，浏览器 half 永远不会被下发**，症状是界面上既没有命名空间也没有表单、且**毫无报错**。根因与源码位置见[设计说明 §8.4](docs/design.md)。
+
+**登记成 bundle 也还不够**（v0.8.0 起）：新版插件页（`packages/client/ui-plugin-manager`）只列 `pkg.installed || pkg.optional || pkg.error` 的 bundle，而 `installed` 的判据是 `packages/boot/plugin-manager/src/index.ts` 的 `listBundles()` 里那句 `dependencies.includes(name)` —— **只写 `dsh.profile.bundles`、不写 `dependencies` 的包会被整条过滤掉**，同样毫无报错。`install.mjs` 现在两处都写；只写 bundle 的旧安装会表现为"插件页里根本没有这个插件"。见[设计说明 §8.5](docs/design.md)。
 
 `client-host.js` 这个根入口刻意 `inject = []`：宿主根上**没有** `compaction` 服务(它由 preset realm 内的 `compaction-basic` 提供)，声明依赖只会让这一行永远 pending。它只做两件事：让客户端模块表扫到本包、在宿主根上注册 settings 命名空间；两处入口都调用 `registerSettings`，靠模块级缓存保证进程级只注册一次(真实的 `SettingsProvider.register` 对重复命名空间会抛错)。
 
@@ -122,7 +126,7 @@ node scripts/install.mjs --force      # 旧路径还有效时也强制重新指�
 
 | 改了什么 | 生效方式 |
 |---|---|
-| **宿主组成**(首次安装新增的 bundle 行、`client-host.js`、`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明) | **必须重启 `dsh`** —— 重启后设置页里才会出现那张卡片 |
+| **宿主组成**(首次安装新增的 bundle 行、`client-host.js`、`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明) | **必须重启 `dsh`** —— 重启后「插件」页里才会出现它，设置页（旧版）里才会出现那张卡片 |
 | preset 的**压缩阈值 / 保留比例** | **保存即生效**：本插件把新值热同步进正在运行的会话（下一次步边界就用新值），同时写进 preset 文件供新会话读取 |
 | preset 的**受控阶段输出预算**(`tool-bootstrap`)与**挂载行** | **新开一条对话**即可，不必重启 |
 | 插件本体 `.js` | **必须重启 `dsh`**(ESM 模块缓存，理由见「开发者本地调试」) |
@@ -158,10 +162,14 @@ node scripts/validate-presets.mjs
   rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
   thresholdRatio = 0.35  retainRatio = 0.05
   compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (存在)
+README.md: 版本徽章 0.8.0 == package.json
+profile web: dependencies["dsh-compact-agents"] = link:E:/dsh-compact-agents（也在 dsh.profile.bundles 里）
 ALL OK (4 preset mounted)
 ```
 
-设置页将显示哪些初值，可以用只读脚本核对(一个文件都不写)：
+最后一行是 v0.8.0 新加的守卫：**登记在 `dsh.profile.bundles` 里却不在 `dependencies` 里**会直接判失败并给出修法 —— 那正是"插件页里看不见我们"的静默状态（原因见上一节）。随包发行的 preset(路径里带 `node_modules` 的那些)被它自己的插件升级重写、丢掉我们的挂载行时，也会在这里失败，并提示重跑 `node scripts/install.mjs`。
+
+表单将显示哪些初值，可以用只读脚本核对(一个文件都不写)：
 
 ```sh
 node scripts/inspect-presets.mjs
@@ -274,14 +282,18 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 > 若模型开着高推理，思考 token 与正文共享这份预算，很容易整份被思考吃光 → 正文 0 字被判截断。
 > 详见[设计说明 §7](docs/design.md)。
 
-### 在「设置」里改这些参数
+### 在界面里改这些参数
 
-打开 **设置 → 插件**，会看到一张「压缩与自动续写」卡片：
+**DSH ≥ 0.1.6**：打开侧栏的 **「插件」页** → 找到 `dsh-compact-agents` → 点进详情，里面就是「压缩与自动续写」表单（页自己带标题与面包屑，表单只有字段本身）。列表里那一行也带一句摘要，关着的时候就写着当前阈值与保留比例。
 
-![DSH 设置 → 插件 页里的「压缩与自动续写」卡片：编号 1 是入口，2 是卡片标题，3 是立即生效的两个字段，4 是新建会话生效的三个字段，5 是底部的放弃修改与保存](docs/images/settings-card-annotated.png)
+**DSH ≤ 0.1.5**：还是在 **设置 → 插件 → 可配置** 里，一张可折叠的「压缩与自动续写」卡片。
 
-> 这张卡片是**纯参数卡片**：本插件在界面上**没有自己的按钮** —— 压缩与自动续写都是**自动发生**的，
-> 卡片上的「重置」只是设置框架自带的还原入口，不会触发压缩。
+![旧版设置页里的「压缩与自动续写」卡片：编号 1 是入口，2 是卡片标题，3 是立即生效的两个字段，4 是新建会话生效的三个字段，5 是底部的放弃修改与保存](docs/images/settings-card-annotated.png)
+
+> 上图是 **0.1.5 及更早**的界面。同一个组件现在同时注册进两个槽位（新版 `plugins.bundle.config` 用**包名**当键、旧版 `settings.plugin.item` 用 settings 命名空间当键），正文只有一份，两端不会漂移；新版那边不再套卡片外壳，因为页自己已经画了标题。旧图暂未替换 —— 取新截图需要重启 GUI。
+
+> 这个表单是**纯参数表单**：本插件在界面上**没有自己的按钮** —— 压缩与自动续写都是**自动发生**的，
+> 框架自带的「重置」只是还原入口，不会触发压缩。
 > DSH 里唯一的手动压缩入口是**自带**的人机命令 `/compact`（不是本插件）；本插件提供的是**模型侧**工具
 > `compact_agents`，由模型调用，不是给人点的。
 
@@ -293,11 +305,11 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 | 压缩进度提示 | 是否在对话区播报「正在压缩上下文…／压缩完成」 | 立即生效 |
 | 自动续写次数 | 被输出上限截断时最多自动发几次"继续"（0 = 关闭） | 立即生效 |
 
-卡片上还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
+表单里还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
 
-卡片本身长什么样，见上面那张标注图；图里的编号与右侧图例一一对应。[docs/images](docs/images/README.md) 记录了这批图的来源与做法（真实界面截图 + 标注，不含任何个人信息），将来若要补别的截图，命名与插入位置也在那里写清。
+旧版那张卡片长什么样，见上面那张标注图；图里的编号与右侧图例一一对应。[docs/images](docs/images/README.md) 记录了这批图的来源与做法（真实界面截图 + 标注，不含任何个人信息），将来若要补别的截图，命名与插入位置也在那里写清。
 
-卡片能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是设置页里既没有命名空间也没有卡片、且毫无报错。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md)）。
+表单能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是界面上既没有命名空间也没有表单、且毫无报错。**另外它还得在 profile 的 `dependencies` 里**，否则新版插件页会把它整条过滤掉。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md) 与 [§8.5](docs/design.md)）。
 
 设计要点（为什么分成两种生效时机）：
 
@@ -429,13 +441,13 @@ dsh-compact-agents
 ├── client-host.js               # 宿主组成那一行的入口:只做两件事(下发浏览器 half + 注册设置命名空间)
 ├── cordis.patch.yml             # dsh.bundle.patch:往宿主组成里插 compact-agents-client-host 行
 ├── settings.js                  # 设置面:settings 命名空间 + preset 参数读写(两个入口共用)
-├── lib/client.js                # 浏览器 half:设置页里那张卡片(手写,无构建步骤)
+├── lib/client.js                # 浏览器 half:插件页的配置表单 + 旧设置页的折叠卡片(同一份正文,手写无构建)
 ├── package.json                 # ESM 包声明(main → index.js;dsh.client → lib/client.js;dsh.bundle.patch → cordis.patch.yml)
 ├── scripts/
 │   ├── lib/presets.mjs          # 各脚本共用:路径常量 + preset 发现(只有一处定义)
-│   ├── install.mjs              # 一键安装/修复:junction + preset 行 + profile bundle(幂等,带 .bak)
-│   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction / bundle 登记
-│   ├── validate-presets.mjs     # 校验挂载行/阈值/路径
+│   ├── install.mjs              # 一键安装/修复:junction + preset 行 + profile bundle 与 dependencies(幂等,带 .bak)
+│   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction / bundle 与依赖登记
+│   ├── validate-presets.mjs     # 校验挂载行/阈值/路径/README 徽章/profile 依赖
 │   ├── inspect-presets.mjs      # 只读自检:真实 preset 里读到的生效值是多少
 │   ├── compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离(只碰临时夹具)
 │   ├── settings-test.mjs        # 设置面测试(真 schemastery + preset 文本手术)
@@ -466,7 +478,7 @@ dsh-compact-agents
 **为什么 preset 一处不够**：`ClientModuleRegistry`(`packages/client/modules/src/index.ts`)只遍历**宿主 Loader 的 entries**，而它的 `internal/plugin` 监听里有 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` —— `fiber.entry` 为空的"子插件或手动挂载"被直接丢弃；preset 行正是 `agent-presets` 用 `internal.import` 手动挂载的，不是 loader 行。结果就是：只挂 preset 时浏览器 half 永远不下发，设置页里既没有命名空间也没有卡片、**且毫无报错**。详见[设计说明 §8.4](docs/design.md)。
 
 插件本体只 import 两个东西：`defineTool`(来自 `@deepseek-ai/dsh-tools`)，以及**动态** import 的 `@deepseek-ai/schemastery`(用来声明设置的 schema)。
-后两个 junction 只有设置面与测试需要；**缺了 schemastery 只会少一个设置页，不会让插件挂掉**（动态 import 失败只记一条 warn）。
+后两个 junction 只有设置面与测试需要；**缺了 schemastery 只会少一个设置面，不会让插件挂掉**（动态 import 失败只记一条 warn）。
 
 **为什么 preset 行必须写绝对路径**：`agent-presets/src/specifier.ts` 的分类函数对绝对盘符路径走 `pathToFileURL`(注释写明"专为 Windows 盘符路径所必需")，变成 `file:` 行；而**裸包名在 preset 里是从 harness 解析的**，指向用户目录的包会解析失败。
 
@@ -478,8 +490,8 @@ node scripts/selftest.mjs             # 模块导入 + defineTool 规格 + 参�
 node scripts/deferred-test.mjs        # 忙→排队→下次 idle 补压(假 ctx，不起 DSH)
 node scripts/integration-test.mjs     # 真机:真 Context + 真 ToolRuntime，全链路
 node scripts/compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离
-node scripts/inspect-presets.mjs      # 只读:设置页将显示的初值
-node scripts/validate-presets.mjs     # 4 份 preset 的挂载行与阈值
+node scripts/inspect-presets.mjs      # 只读:表单将显示的初值
+node scripts/validate-presets.mjs     # preset 挂载行与阈值 + README 徽章 + profile 依赖
 node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 ```
 
@@ -498,8 +510,12 @@ node scripts/install.mjs --dry-run    # 安装预演(不改盘)
 - **已 composed 的会话拿不到新工具**：preset 改动只对新会话生效，老会话需新开(或重启 DSH，但那会丢成员会话)；
 - **不做孤儿数据/状态清理**：本插件无状态，无需清理。
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
+- **插件页的启用/停用开关只管浏览器 half**：插件页上关掉本插件，动的是宿主组成里那一行（`compact-agents-client-host`）—— 表单不再出现；而 `compact_agents` 工具由 **preset 行**提供，与这个开关无关，仍然照常挂载。要整体停用，用 `node scripts/uninstall.mjs`。
+- **随包发行的 preset 会被它自己的插件升级重写**：`<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行是安装时插进去的，插件升级会整份重写掉它（实测撞上过：`@linxin666/dsh-liangshen` 升级后默认 preset 里就没有 `compact-agents` 行了，而用户自建的 `~/.dsh/.agent-presets/liangshen` 又被随包同名 preset **遮蔽**——`agent-presets` 的 roots 顺序是"随包最先、用户目录最后"，同 id 前者胜）。升级后重跑一次 `node scripts/install.mjs` 即可，`node scripts/validate-presets.mjs` 会先告诉你少了哪一份。
 
 ## 更新历史
+
+- **v0.8.0** — **跟上 DSH 0.1.6 的插件页**。上游 `90af3110b7 feat(web): host plugin configuration on the Plugins page` 把插件配置从「设置」搬到侧栏新的「插件」页（`ui-plugin-manager`），老槽位 `settings.plugin.item` 的渲染方 `ConfigurablePluginsTab.tsx` 被删掉 —— 我们那张卡片于是**凭空消失、毫无报错**（`ctx.slots.inject` 对没人声明的槽位是静默的，注册上去既不抛错也不显示）。现在同一份正文同时注册进两个槽位：新版 `plugins.bundle.config`（键是**包名**）画表单、旧版 `settings.plugin.item`（键是 settings 命名空间）画折叠卡片；两边共用同一个控制器与同一份正文，不会漂移；一个槽位注册失败也不会连累另一个。第二处静默失败一并修掉：新版插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据是包名在不在 profile 的 `dependencies` 里 —— 只登记 `dsh.profile.bundles` 的旧安装会被**整条过滤掉**，所以 `install.mjs` 现在两处都写（优先走官方 `dsh plugin add`，失败或 `--no-cli` 时回落到行级手写登记，写前留 `.bak-compact-agents`、写坏自动回滚），`validate-presets.mjs` 把"在 bundles 里却不在 dependencies 里"直接判成失败。`client-test.mjs` 相应覆盖：两个槽位的注册、表单形状（不套卡片外壳）、列表项一行摘要、命名空间未就绪时的降级，以及槽位互不连累。
 
 - **v0.7.4** — README 顶部的版本徽章和 package.json 对齐，并加进 npm test 的校验里。起因是查市场收录时顺手发现：徽章还写着 0.4.0，而 package.json 已经 0.7.x —— 市场抓的正是 README，别人在 dsh.market 上看到的版本号就是那个过时的数字。手写的徽章靠自觉必然再忘一次，所以让 validate-presets 在两者不一致时直接失败。
 
