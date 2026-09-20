@@ -63,7 +63,7 @@ const FIXTURE = [
   '        retainRatio: 0.05     # 压缩后保留最近 5% 窗口',
   '        maxTokens: 8192',
   '    - id: compact-agents',
-  "      name: 'E:/somewhere/index.js'",
+  "      name: '/opt/elsewhere/index.js'",
   '- id: tool-bootstrap',
   '  name: ./tool-bootstrap.mjs',
   '  config:',

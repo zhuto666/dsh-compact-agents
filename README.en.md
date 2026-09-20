@@ -29,15 +29,18 @@ Installation has two steps: install the package (the official channel — pnpm f
 dsh plugin --profile web add github:zhuto666/dsh-compact-agents
 
 # 2. Mount the preset row: the tool itself + path self-healing (idempotent, safe to re-run)
-node ~/.dsh/profiles/web/node_modules/dsh-compact-agents/scripts/install.mjs
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 ```
 
 Replace `--profile web` with the profile you actually boot; `dsh plugin` forwards the remaining arguments to `pnpm` inside that profile directory. Add `--dry-run` to step 2 to preview the changes without writing anything.
 
+`<profile-dir>` is that profile's directory, by default `~/.dsh/profiles/<profile>`. `~` is expanded only on macOS, Linux and Git Bash, so those can copy the form as-is; Windows PowerShell and cmd do not expand it — write the full path instead, e.g. `<your home directory>\.dsh\profiles\web\node_modules\dsh-compact-agents\scripts\install.mjs`.
+
 Installing from a local checkout (when developing this repository):
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-compact-agents    # Windows example: E:\path\to\dsh-compact-agents
+# run from the repository root; the path after add must be absolute — dsh runs pnpm inside the profile directory
+dsh plugin --profile web add /absolute/path/to/dsh-compact-agents
 node scripts/install.mjs
 ```
 
@@ -135,7 +138,7 @@ The primary entry point is its own page in Settings: open **Settings** → sideb
 
 ![The 「设置 → 压缩与自动续写」 page: the real UI on the left, numbered markers matched to the legend on the right](docs/images/settings-section-annotated.png)
 
-> The Settings sidebar in the screenshot shows it at the same level as 「内置插件」. The values shown are the live preset values on the machine that was photographed (two ratios carry an "overridden" marker); they are not the factory defaults — see the tables below. For the old card on DSH ≤ 0.1.5 see `docs/images/settings-card-annotated.png` (archive only).
+> The Settings sidebar in the screenshot shows it at the same level as 「内置插件」. The values shown are that preset's live values as captured in the screenshot (two ratios carry an "overridden" marker); they are not the factory defaults — see the tables below. For the old card on DSH ≤ 0.1.5 see `docs/images/settings-card-annotated.png` (archive only).
 
 The form is parameters only: the plugin adds no buttons of its own, compaction and auto-continue both happen automatically, and the framework's own "Reset" is just a revert entry point. The only manual compaction entry point in DSH is the built-in human command `/compact` (not this plugin) — what this plugin provides is the model-side tool `compact_agents`.
 
@@ -198,7 +201,7 @@ git -C <checkout> pull && node scripts/install.mjs
 
 # installed from GitHub: pnpm re-resolves the git dependency, then re-apply the mount row
 dsh plugin --profile web update dsh-compact-agents
-node ~/.dsh/profiles/web/node_modules/dsh-compact-agents/scripts/install.mjs
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 
 # uninstall (preview with --dry-run first)
 node <plugin-dir>/scripts/uninstall.mjs

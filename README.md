@@ -29,15 +29,18 @@
 dsh plugin --profile web add github:zhuto666/dsh-compact-agents
 
 # 2. 挂载 preset 行：工具本体 + 路径自愈（幂等，可重复执行）
-node ~/.dsh/profiles/web/node_modules/dsh-compact-agents/scripts/install.mjs
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 ```
 
 `--profile web` 换成你实际启动的 profile 名；`dsh plugin` 把其余参数原样转发给该 profile 目录里的 pnpm。第二步先加 `--dry-run` 可预览改动、不落盘。
 
+`<profile-dir>` 是该 profile 的目录，默认为 `~/.dsh/profiles/<profile 名>`。`~` 只在 macOS、Linux 与 Git Bash 里展开，这几种环境可以照写；Windows 的 PowerShell 与 cmd 不展开它，要写完整路径，如 `<用户目录>\.dsh\profiles\web\node_modules\dsh-compact-agents\scripts\install.mjs`。
+
 从本地 checkout 安装（开发本仓库时）：
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-compact-agents    # Windows 例：E:\path\to\dsh-compact-agents
+# 在仓库根目录执行；add 后面必须写绝对路径 —— dsh 会切到 profile 目录里执行 pnpm
+dsh plugin --profile web add /absolute/path/to/dsh-compact-agents
 node scripts/install.mjs
 ```
 
@@ -55,7 +58,7 @@ DSH 的手动压缩入口只有一个人机命令 `/compact`：
 
 因此"会话越跑越贵"过去只能靠换人（退役成员、新建成员）解决。本插件补上缺失的模型侧入口。
 
-> 实拍数据：一个成员会话每次调用重发约 40 万 tokens 的上下文，跑到 348 次调用、累计 1.4 亿 cacheRead、¥10.87 —— 它的成本与它是否被压缩直接相关。
+> 实测数据：一个成员会话每次调用重发约 40 万 tokens 的上下文，跑到 348 次调用、累计 1.4 亿 cacheRead、¥10.87 —— 它的成本与它是否被压缩直接相关。
 
 ## 装完请重启一次 `dsh`
 
@@ -135,7 +138,7 @@ compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 
 ![「设置 → 压缩与自动续写」页：左侧是真实界面截图，编号与右侧图例一一对应](docs/images/settings-section-annotated.png)
 
-> 图里「设置」左栏能看到它与「内置插件」同级。图里的数值是实拍机器上 preset 的现值（两张比例带「已覆盖」标记），不等于出厂默认 —— 默认值见下面表格。DSH ≤ 0.1.5 的老卡片长什么样，见 `docs/images/settings-card-annotated.png`（仅存档）。
+> 图里「设置」左栏能看到它与「内置插件」同级。图中数值是实拍界面上该 preset 的现值（两张比例带「已覆盖」标记），不等于出厂默认 —— 默认值见下面表格。DSH ≤ 0.1.5 的老卡片长什么样，见 `docs/images/settings-card-annotated.png`（仅存档）。
 
 这个表单是纯参数表单：插件在界面上没有自己的按钮，压缩与自动续写都是自动发生的；框架自带的「重置」只是还原入口。DSH 里唯一的手动压缩入口是自带的人机命令 `/compact`（不是本插件）—— 本插件提供的是模型侧工具 `compact_agents`。
 
@@ -198,7 +201,7 @@ git -C <checkout> pull && node scripts/install.mjs
 
 # 从 GitHub 安装：pnpm 重新解析该 git 依赖，再补一次挂载行
 dsh plugin --profile web update dsh-compact-agents
-node ~/.dsh/profiles/web/node_modules/dsh-compact-agents/scripts/install.mjs
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 
 # 卸载（先 --dry-run 预览）
 node <插件目录>/scripts/uninstall.mjs

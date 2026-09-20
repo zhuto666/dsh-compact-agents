@@ -114,7 +114,7 @@ fs.writeFileSync(presetFixture, [
   '        thresholdRatio: 0.2   # 1M 窗口 x 0.2 = 200K 触发压缩',
   '        retainRatio: 0.05     # 压缩后保留最近 5% 窗口',
   '    - id: compact-agents',
-  "      name: 'E:/dsh-compact-agents/index.js'",
+  "      name: '/opt/plugins/dsh-compact-agents/index.js'",
   '- id: tool-bootstrap',
   '  name: ./tool-bootstrap.mjs',
   '  config:',
