@@ -2,13 +2,11 @@
 
 <div align="center">
 
-**DeepSeek Harness 会话上下文强制压缩插件(模型可调用的 `compact_agents`)**
+**DeepSeek Harness 会话上下文强制压缩插件：一个模型可调用的 `compact_agents` 工具 + 一块设置界面里的参数表单**
 
-强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**(主会话 / 普通子代理 / AgentTeams 成员一视同仁) · 没有子代理时主会话也能压自己 · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报被遮蔽节点数与估算 token 数 · 只有顶层 agent 能扫描、子代理越权被拒 · 工具调用串行不并发 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · **压缩阈值等参数可在设置里自成一页直接改** · 零网络、零依赖、浏览器 half 手写无构建步骤
+强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · 参数在**设置**里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.8.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
-
-**v0.8.1**：参数表单回到"设置里自成一页" —— **设置 → 「压缩与自动续写」**，与「内置插件」同级。起因是 DSH 0.1.6 把插件配置搬去侧栏「插件」页、并退役了老槽位 `settings.plugin.item`，我们那张卡片先是凭空消失（`slots.inject` 对没人声明的槽位是静默的），随后即便把表单挂进插件页，也得"进插件页 → 找到本包 → 进详情"才能改参数。现在用官方的 `settings.section` 槽位自成一页，同时保留插件页与旧设置页两处（三处共用同一份正文与同一个控制器）。上一版还顺带修掉了第二处静默失败：只在 `dsh.profile.bundles` 里、不在 profile `dependencies` 里的包会被插件页整条过滤。详见[设计说明 §8.5](docs/design.md) 与 [§8.7](docs/design.md)。
+[![version](https://img.shields.io/badge/version-0.8.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -20,190 +18,48 @@
 
 ---
 
-## 功能总览
-
-| 能力 | 入口 / 参数 | 说明 |
-|---|---|---|
-| 强制压缩(**忽略自动阈值**) | `compact_agents(scope)` | 走 `ctx.compaction.compactNow`，契约原文是*"Explicitly compact useful history **even below automatic pressure thresholds**"*；自动压缩要等阈值，本工具不等 |
-| 覆盖**所有活会话** | `scope: "others"`(默认) / `"all"` | 覆盖范围是 `ctx.agents.list()`——主会话、普通子代理、AgentTeams 成员**一视同仁**，不是只挑团队成员 |
-| 主会话压自己 | `scope: "self"` | **没有子代理时也有效**：调用者永远在 turn 中，必然走排队路径，本轮结束自动补压 |
-| 指定目标 | `scope: "ids"` + `ids: [...]` | 只压列出的会话；找不到的 id 单独回报，不静默吞掉 |
-| 忙则排队 | `whenBusy: "queue"`(默认) | 目标正在跑 turn 时不放弃：监听其 `agent/status → idle`，**这一轮一结束就补压**；`"skip"` 则直接报 `busy` 不动它 |
-| 逐目标回报 | 返回值 `results[]` | 每个目标给出 `compacted` / `queued` / `noop` / `busy` / `error`，以及被遮蔽的节点数与估算 token 数 |
-| 越权保护 | — | 只有**顶层 agent** 能扫描他人；子代理只能 `scope: "self"`，成员无法互压或压队长 |
-| 串行调度 | — | 注册为 fail-closed 的 `exclusive`，一次扫描不会和另一个可能压同一会话的调用并行；超时 30 分钟(排队部分不计入，它在 turn 之后跑) |
-| 自动压缩阈值(配套) | `compaction-basic` 配置 | 本插件**不改**自动策略；安装脚本顺带核对 `thresholdRatio`(DSH 默认 0.8×1M=800K 等于永不触发；默认 0.35，即 350K 触发) |
-| **压缩过程在对话区可见** | 默认开启；`notice: false` 关闭 | 订阅 `session/event`，`compaction/start` 一落地就往会话尾追加一条插件来源的 `user/message`，客户端渲染成「上下文注入 · dsh-compact-agents」折叠行：压缩中显示 *正在压缩上下文…（当前 213,400 tokens）· 触发线 ×0.35*，结束时显示 *上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点*。`compaction/start` 是在摘要模型调用**之前**写的，这段提示正好盖住原本什么都看不见的等待。**提示里会报出本会话实际生效的触发线**；万一热同步没成功，折叠行与正文会直接点明两个值与"新开一条对话才生效" |
-| **被输出上限截断时自动续写** | 默认开启；`maxAutoContinues`(默认 2，`0`/`false` 关闭) | 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"(`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。连续次数有上限，任一轮正常结束即清零，避免无止境烧 token |
-| **设置界面里能改** | 默认开启；`settings: false` 关闭 | 注册 settings 命名空间 `compact-agents`，浏览器 half 在侧栏「插件」页（DSH ≤ 0.1.5 是「设置 → 插件」）里提供表单：压缩触发阈值、保留比例、受控阶段输出预算、压缩提示开关、自动续写次数，五项都能在界面上改，不用再去编辑 preset 的 YAML |
-
-## 为什么需要它
-
-DSH 的手动压缩入口只有一个**人机命令** `/compact`(`@deepseek-ai/dsh-command-compact` 用 `ctx.commands.register` 注册，只服务交互式 UI 适配器)。于是：
-
-- headless 的**子代理 / AgentTeams 成员**没有命令面，执行不了 `/compact`；
-- **队长也没有任何工具**能替成员压缩——`packages/compaction/` 下没有任何 `registerTool`；
-- 而自动压缩(`compaction-basic`)是**按阈值**触发的：阈值没到就不压。
-
-结果就是"会话越跑越贵"过去只能靠**换人**(退役成员、新建成员)解决。本插件补上这个缺失的模型侧入口。
-
-> 真实教训：一个成员会话曾以每次调用重发 **约 40 万 tokens** 的上下文跑到 348 次调用，累计 1.4 亿 cacheRead、¥10.87；而它只是"没人能替它压缩"。
-
 ## 安装
 
-> 需求：Node.js ≥ 20 + DeepSeek Harness(带 `agent-presets` 的版本)。
-
-### 一键安装(推荐)
+> 需要 Node.js ≥ 20 + 带 `agent-presets` 的 DeepSeek Harness。
 
 ```sh
-git clone https://github.com/zhuto666/dsh-compact-agents.git
-cd dsh-compact-agents
-node scripts/install.mjs --dry-run     # 先预览要改什么(不改盘)
-node scripts/install.mjs               # 确认后执行(profile 默认 web，可用 --profile 指定)
+dsh plugin add E:\dsh-compact-agents --profile web    # 官方通道，推荐
 ```
 
-脚本做这几件事，且**幂等**：
-
-1. **建三个目录联接(junction)**，让插件能解析到 `@deepseek-ai/dsh-tools`、`@deepseek-ai/cordis` 与 `@deepseek-ai/schemastery`——本项目**刻意零依赖**(不装 node_modules)，Node 会把 junction 解析到真实路径，因此拿到的是和宿主**同一个模块实例**，没有双实例问题；
-2. **往 preset 的 `compaction` 隔离组里追加一行挂载**(`compact_agents` 工具、压缩提示、自动续写都靠它)：
-
-```yaml
-    - id: compact-agents
-      name: '/absolute/path/to/dsh-compact-agents/index.js'   # 安装脚本会自动填成你的真实绝对路径
-```
-
-3. **把本插件登记进宿主组成**(浏览器 half、那张配置表单靠它)：在 `<DSH_HOME>/profiles/<profile>/node_modules/` 下建一个指向本仓库的 `dsh-compact-agents` 联接，并把 `dsh-compact-agents` 加进该 profile `package.json` 的 `dsh.profile.bundles` —— 宿主 Loader 于是多出一行 `compact-agents-client-host`(由本包的 `dsh.bundle.patch` → `cordis.patch.yml` 注入，入口 `client-host.js`)。**同时**把它写进同一个 `package.json` 的 `dependencies`（`link:<本仓库绝对路径>`）：新版插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据就是包名在不在 `dependencies` 里 —— 少了这一步，插件页里会**整条看不到它，且毫无报错**。profile 用 `--profile <name>` 指定，默认 `web`；改这个 `package.json` 前会留一份 `<package.json>.bak-compact-agents`。
-
-   这一步会**先试官方通道** `dsh plugin add <本仓库绝对路径> --profile <profile>`（它把依赖、bundle 登记与实际安装一次做完），失败或加了 `--no-cli` 时回落到上面的手写登记。
-
-**装完请重启一次 `dsh`**：宿主组成变了(profile 多了一个 bundle)，重启后侧栏「插件」页里才会出现 `dsh-compact-agents` 与那张配置表单（DSH ≤ 0.1.5 在「设置 → 插件」里）。之后只改 preset 里的参数就不必重启(见「生效」)。
-
-自动发现 `$DSH_HOME/.agent-presets/*/agent.cordis.yml` 与 `$DSH_HOME/profiles/*/node_modules/@linxin666/*/presets/*/agent.cordis.yml`；也可以用 `--preset <file>` 指定要处理的 preset。改文件前会留 `.bak` 备份，没有 `compaction` 组的 preset 直接跳过。
-
-**DSH 检出位置同样是自动探测的，脚本和文档里不写死任何盘符**，依次尝试：
-
-1. `--dsh <checkout>` / `$DSH_CHECKOUT` / `$DSH_HARNESS`；
-2. 本项目 `node_modules` 里已有的联接目标(装过一次就连带记下了检出在哪儿)；
-3. **PATH 上 `dsh` 启动器的真实入口**(包管理器生成的 shim 里写着 `dsh` 在哪儿)—— 全新克隆、什么线索都没有时，靠的就是这一条；
-4. 各 profile 的 `node_modules`；
-5. 家目录下的常见克隆位置。
-
-全都落空才报错，并提示用 `--dsh` 指定。
-
-**那行路径不是写死的，是安装时算出来的** —— `install.mjs` 用自己所在目录推导 `PLUGIN_ENTRY`，所以：
-
-- 你在哪儿克隆/放这个项目，那行就指向哪儿；
-- **项目被移动或改名后，重跑一次 `install.mjs` 就会自动改正**：发现已有行指向一个不存在的路径时直接 `repaired`；若旧路径仍然有效(例如另存了一份副本)，则只 `WARN` 不动手，加 `--force` 才重新指向。
+本仓库另有等价的**幂等**脚本，官方通道失败（或加了 `--no-cli`）时用它：
 
 ```sh
-node scripts/install.mjs --dry-run    # 预览(不改盘)
-node scripts/install.mjs              # 执行；自动修复失效路径
-node scripts/install.mjs --force      # 旧路径还有效时也强制重新指向
+node scripts/install.mjs --dry-run    # 先预览要改什么（不改盘）
+node scripts/install.mjs              # 执行：profile 依赖 + bundle 登记 + junction + preset 挂载行
+node scripts/validate-presets.mjs     # 校验：挂载行 / 引用路径 / 阈值 / README 版本徽章 / profile 依赖
+node scripts/uninstall.mjs --dry-run  # 卸载前先预览
 ```
 
-> **为什么不能像普通包那样只写包名？** 这不是偷懒，是 DSH 的既定语义：preset 行里的**裸包名是从 harness 安装位置解析的**(`agent-presets/src/mount.ts` 的 `PresetTree.import` 注释原文 *"a package name resolves from the harness base"*)，不是从用户目录；装在工作区/用户目录的包根本解析不到。所以第三方插件在这里只有两条路——写绝对路径，或把插件文件放进 preset 目录跟着走。本项目选前者：**单一真源**，不给每个 preset 留副本。
+> preset 挂载行写的是**绝对路径**：preset 里的裸包名是从 harness 安装位置解析的，指向用户目录的包根本解析不到。项目移动或改名后，重跑一次 `install.mjs` 就会自动修正。
 
-### 为什么要挂两处(宿主组成 + preset)
+## 它解决什么问题
 
-两个挂载点**缺一不可**，各管一半：
+DSH 的手动压缩入口只有一个**人机命令** `/compact`：
 
-| 挂载点 | 载体 | 负责 |
-|---|---|---|
-| preset 行 | `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 里 `compaction` 组的 `compact-agents` 行(绝对路径指向本仓库 `index.js`) | `compact_agents` 工具、压缩进度提示、被输出上限截断后的自动续写。**必须待在 `compaction` realm 内**：cordis 的隔离按服务名生效，realm 外解析不到 `ctx.compaction` |
-| 宿主组成里的 bundle 行 | profile 的 `dsh.profile.bundles` 登记本包 → 本包 `dsh.bundle.patch` 指向 `cordis.patch.yml` → 插入 `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'`(入口 `client-host.js`) | 让 DSH 的客户端模块表扫到本包的 `dsh.client` 声明(从而把 `lib/client.js` 下发给浏览器)，并在宿主根上注册 settings 命名空间 |
+- headless 的**子代理 / AgentTeams 成员**没有命令面，执行不了 `/compact`；
+- 也**没有任何模型侧工具**能替别的会话压缩 —— `packages/compaction/` 下没有一个 `registerTool`；
+- 而自动压缩（`compaction-basic`）**按阈值**触发：阈值没到就不压。
 
-**只挂 preset 是不够的**：DSH 的 `ClientModuleRegistry`(`packages/client/modules/src/index.ts`) **只遍历宿主 Loader 的 entries** 来决定给浏览器下发哪些客户端 bundle —— 它监听 `internal/plugin` 的那段里有一行 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return`，注释明说"`fiber.entry` 为空的是子插件或手动挂载"，直接丢弃；构造时也只做 `for (const entry of ctx.loader.entries())`。而 preset 里的行是 `agent-presets` 用 `internal.import` **手动挂载**的、不是 loader 行。所以**只挂在 preset 里，浏览器 half 永远不会被下发**，症状是界面上既没有命名空间也没有表单、且**毫无报错**。根因与源码位置见[设计说明 §8.4](docs/design.md)。
+于是"会话越跑越贵"过去只能靠**换人**（退役成员、新建成员）解决。本插件补上这个缺失的模型侧入口。
 
-**登记成 bundle 也还不够**（v0.8.0 起）：新版插件页（`packages/client/ui-plugin-manager`）只列 `pkg.installed || pkg.optional || pkg.error` 的 bundle，而 `installed` 的判据是 `packages/boot/plugin-manager/src/index.ts` 的 `listBundles()` 里那句 `dependencies.includes(name)` —— **只写 `dsh.profile.bundles`、不写 `dependencies` 的包会被整条过滤掉**，同样毫无报错。`install.mjs` 现在两处都写；只写 bundle 的旧安装会表现为"插件页里根本没有这个插件"。见[设计说明 §8.5](docs/design.md)。
+> 实测：一个成员会话每次调用重发**约 40 万 tokens** 的上下文，跑到 348 次调用、累计 1.4 亿 cacheRead、¥10.87 —— 它只是"没人能替它压缩"。
 
-`client-host.js` 这个根入口刻意 `inject = []`：宿主根上**没有** `compaction` 服务(它由 preset realm 内的 `compaction-basic` 提供)，声明依赖只会让这一行永远 pending。它只做两件事：让客户端模块表扫到本包、在宿主根上注册 settings 命名空间；两处入口都调用 `registerSettings`，靠模块级缓存保证进程级只注册一次(真实的 `SettingsProvider.register` 对重复命名空间会抛错)。
+## 装完请重启一次 `dsh`
 
-> 这不是自创形态：已装的站外插件 `@a9i5k4/dsh-auto-memory` 同样声明了 `dsh.bundle.patch`、`dsh.client` 与 `exports['./client']`，patch 内容就是 `- insert: [ { id, name } ]`。本插件采用与它相同的形态。
+宿主组成变了（profile 里多了一个 bundle），而客户端模块的 rev 只在 `dsh` **启动时**计算 —— 不重启，设置里的表单不会出现。
 
-### 生效
+**首次安装有个次序问题**：想让**现有的**成员/子代理也被压，就别急着重启 —— 重启会丢掉所有活会话（`ctx.agents.list()` 只覆盖活着的会话），那就没东西可压了。先压完再重启，或者重启后重开成员。`compact_agents` 工具本身不依赖这次重启：preset 行装好，新开一条对话就能用。
 
-改动落在哪一层，决定它怎么生效：
+之后只改 preset 里的参数不必重启（见下面的生效时机）。
 
-| 改了什么 | 生效方式 |
-|---|---|
-| **宿主组成**(首次安装新增的 bundle 行、`client-host.js`、`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明) | **必须重启 `dsh`** —— 重启后「插件」页里才会出现它，设置页（旧版）里才会出现那张卡片 |
-| preset 的**压缩阈值 / 保留比例** | **保存即生效**：本插件把新值热同步进正在运行的会话（下一次步边界就用新值），同时写进 preset 文件供新会话读取 |
-| preset 的**受控阶段输出预算**(`tool-bootstrap`)与**挂载行** | **新开一条对话**即可，不必重启 |
-| 插件本体 `.js` | **必须重启 `dsh`**(ESM 模块缓存，理由见「开发者本地调试」) |
+## 怎么用
 
-preset 改动靠 standing mount 的**文件戳热重载**(戳 = `stat` 的 `mtimeMs` + `size`)：戳变了，下一条新会话重新挂载一代，就带上工具；已经 composed 的会话因 `agent-preset/locked` 拿不到，属预期。
-
-**但阈值与保留比例不必等那一步**：本插件订阅设置面的保存事件，读回 preset 里的新值后直接写进正在运行的 `compaction-basic` 实例 —— 该实例的 `config` 是普通自有属性（对象本身被冻结，但引用可换），而压力判定每次调用都重新读它，所以**下一次步边界就按新阈值判**，不用新开对话、更不用重启。`bootstrapMaxTokens` 属于另一个插件（`tool-bootstrap.mjs` 在 `apply()` 里把值捕获进闭包），改不动，仍然只对新会话生效。
-
-压缩提示里会报出**本会话实际生效的触发线**；只有热同步真的进不去时（配置形状变了／写不进去），才会多一行说明两个值与出路：
-
-```
-⚠️ preset 文件里现在是 ×0.5，本会话这个实例仍按 ×0.2（热同步没成功）：新开一条对话才会用上新值。
-```
-
-行配置 `livePresetParams: false` 可关掉热同步（那就回到"新会话生效"的老行为）。
-
-**它还会自我反证**（v0.7.1）：光"写进去了"不等于"引擎吃了"。热同步之后，插件拿**策略自己决定**的那次压缩反过来验算 —— 达线判定是 `token 数 >= 窗口 × 阈值`，所以把阈值从 0.2 抬到 0.5 之后，若 1M 窗口下仍在 250K 就压，说明引擎还按 0.2 判。这时它不再自称生效，而是按 0.2 报触发线，并给出"新开一条对话"这条正路。手动压缩（`/compact`，或 `compact_agents` 工具触发的那次）在任意 token 数上都可能发生，一律不当作证据，免得冤枉引擎。
-
-> **想让现有的成员也被压，就别重启 DSH** —— 重启会丢掉所有成员/子代理会话(`ctx.agents.list()` 只覆盖活着的会话)，那就没东西可压了。新开一条对话不影响它们。
->
-> 于是首次安装有个次序问题："看到设置卡片"和"别丢成员会话"不能同时满足 —— 先压完再重启，或者重启后重新开成员。`compact_agents` 工具本身不依赖这次重启：preset 行装好，新开一条对话就能用。
-
-### 校验安装
-
-```sh
-node scripts/validate-presets.mjs
-```
-
-逐份报告挂载行位置、引用的文件是否存在、以及 `compaction-basic` 的 `thresholdRatio` / `retainRatio`。期望输出：
-
-```
-.agent-presets/liangshen/agent.cordis.yml
-  rows           = compaction-basic,command-compact,compact-agents,tool-result-pruner
-  thresholdRatio = 0.35  retainRatio = 0.05
-  compact-agents -> /absolute/path/to/dsh-compact-agents/index.js (存在)
-README.md: 版本徽章 0.8.0 == package.json
-profile web: dependencies["dsh-compact-agents"] = link:E:/dsh-compact-agents（也在 dsh.profile.bundles 里）
-ALL OK (4 preset mounted)
-```
-
-最后一行是 v0.8.0 新加的守卫：**登记在 `dsh.profile.bundles` 里却不在 `dependencies` 里**会直接判失败并给出修法 —— 那正是"插件页里看不见我们"的静默状态（原因见上一节）。随包发行的 preset(路径里带 `node_modules` 的那些)被它自己的插件升级重写、丢掉我们的挂载行时，也会在这里失败，并提示重跑 `node scripts/install.mjs`。
-
-表单将显示哪些初值，可以用只读脚本核对(一个文件都不写)：
-
-```sh
-node scripts/inspect-presets.mjs
-```
-
-### 更新 / 卸载
-
-```sh
-git -C dsh-compact-agents pull          # 更新:拉取后重新执行 install.mjs(幂等)
-node scripts/uninstall.mjs --dry-run       # 卸载:先预览
-node scripts/uninstall.mjs                 # 移除挂载行 + 摘掉 profile bundle 登记 + 删除自己建的 junction
-```
-
-卸载只删自己加的东西：preset 的注释、`!!js` 表达式、其它行一律不动(实测安装→卸载后文件**逐字节回到原状**)，profile `package.json` 里的 bundle 登记同样按行摘除、保留原排版。插件目录与 `.bak` / `.bak-compact-agents` 备份不删，自行处理。卸载同样改了宿主组成，所以**重启 `dsh` 后设置卡片才会消失**。
-
-### 开发者本地调试
-
-```sh
-node scripts/integration-test.mjs    # 真机加载测试(真 cordis Context + 真 ToolRuntime)
-node scripts/deferred-test.mjs       # 忙→排队→idle 补压 的行为测试(假 ctx)
-node scripts/selftest.mjs            # 模块导入 + defineTool 规格自检
-```
-
-改完 `index.js` 后**必须重启 `dsh` 才能真正生效** —— 这一点很容易踩坑：
-
-- Node 的 **ESM 模块缓存按 URL 命中**，preset 重新挂载**不会**清它(DSH 自己的 HMR 插件是靠显式清 `internal.loadCache` 才能热重载的，而它在 profile 里默认 `disabled`)；
-- 所以"新开一条对话"只会重新挂载 **preset**，插件的模块本身仍是进程里已缓存的旧代码；
-- `scripts/*.mjs` 是每次直接执行的脚本，**不受影响**，改完立即是新的。
-
-> 只有**改了 preset** 时，新开对话就够了；**改了插件 `.js`(含 `client-host.js` / `settings.js`)或宿主组成相关的文件(`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明)都必须重启 `dsh`**。
-
-## 用法
-
-模型侧调用(不是人机命令):
+模型侧调用，不是人机命令：
 
 ```
 compact_agents(scope = "others" | "all" | "self" | "ids", ids?: string[], whenBusy = "queue" | "skip")
@@ -211,188 +67,97 @@ compact_agents(scope = "others" | "all" | "self" | "ids", ids?: string[], whenBu
 
 | scope | 含义 |
 |---|---|
-| `others`(默认) | 除调用者以外的**所有活会话** |
+| `others`（默认） | 除调用者以外的**所有活会话** |
 | `all` | **所有活会话**，含调用者自己 |
 | `self` | 只压调用者自己 —— **没有子代理时也有效** |
 | `ids` | 只压 `ids` 里列出的会话 |
 
-典型说法：
+典型说法：「把其他会话都压一遍」→ `others`；「我这条对话也一起压」→ `all`（你自己会被排队，本轮结束补压）；「只压我自己」→ `self`。
 
-- 「把其他会话都压一遍」→ `scope: "others"`
-- 「我这条对话也一起压」→ `scope: "all"`(你自己会被排队，本轮结束补压)
-- 「只压我自己」→ `scope: "self"`
-
-> **模型没调用它？** 工具描述里已写明"用户要求压缩上下文时**立即调用**、不要反问"，但仍可能遇到模型选择先确认一下。最稳的说法是**把工具名说出来**：
+> **模型没调用它？** 工具描述里已写明"用户要求压缩上下文时**立即调用**、不要反问"，但仍可能遇到模型先确认一下。最稳的说法是**把工具名说出来**：
 >
 > ```
 > 调用 compact_agents，scope=all，把所有会话压一遍
 > ```
 >
-> 工具本身与模型行为无关——只要它在工具清单里，点名调用必定执行。
+> 只要工具在清单里，点名调用必定执行。
 
-返回每个目标一行，例如：
+返回每个目标一行：
 
 ```
 compact_agents: 3 compacted, 1 queued, 0 skipped, 0 failed (of 4 selected).
 - sess_ab12: compacted, ~213,400 → ~49,800 tokens — shadowed surface 12-107
-- sess_cd34: compacted, ~52,100 → ~9,040 tokens — shadowed surface 3-33
 - sess_ef56: noop, ~0 tokens shadowed — nothing safely compactable (empty session, or one oversized retained unit)
 - sess_gh78: queued — mid-turn; queued and will be compacted as soon as it goes idle
 ```
 
-`beforeTokens` / `afterTokens` 是压缩前后用 `ctx.tokenMeter` 实测的表面估算；测不到时为 `-1`。
+`beforeTokens` / `afterTokens` 是用 `ctx.tokenMeter` 实测的表面估算；测不到时为 `-1`。
 
-### 对话区的压缩提示
+行为边界：只有**顶层 agent** 能扫描他人（子代理只能用 `scope: "self"`）；每个目标必须 **idle** 才能立即压（忙的按 `whenBusy` 排队，`skip` 则直接报 `busy`）；一次扫描**串行**执行、超时 30 分钟（排队那部分在 turn 之后跑，不计入）。
 
-工具之外，**任何**压缩(包括阈值触发的自动压缩)都会在对话区留下一条可见提示 —— 形态就是框架自己
-注入上下文时用的那种折叠行：
+### 压缩会在对话区留下可见提示
+
+**任何**压缩（包括阈值触发的自动压缩）都会在对话区留下一行提示；`compaction/start` 是在摘要模型调用**之前**写的，所以它正好盖住原本什么都看不见的等待：
 
 ```
 ▸ 上下文注入 · dsh-compact-agents · 正在压缩上下文…（当前 213,400 tokens） · 触发线 ×0.35
 ▸ 上下文注入 · dsh-compact-agents · 上下文压缩完成：约 213,400 → 49,800 tokens，已遮蔽 37 个历史节点
 ```
 
-`compaction/start` 是在摘要模型调用**之前**写入会话日志的，所以第一条提示正好出现在原本那段
-什么都看不见的等待里。行配置 `notice: false` 可关闭(工具不受影响)。
-
-折叠行末尾那个 `触发线 ×0.35` 是**本会话实际生效的值**。正常情况下它总是跟 preset 文件一致 ——
-保存设置时插件会把新值热同步进运行中的会话；只有热同步进不去时才会多一行：
+末尾的 `触发线 ×0.35` 是**本会话实际生效的值**；只有热同步真的进不去时才会多一行说明两个值与出路：
 
 ```
-⚠️ preset 文件里现在是 ×0.5，本会话这个实例仍按 ×0.2（热同步没成功）：新开一条对话才会用上新值。
+⚠️ 预设文件里现在是 ×0.5，本会话这个实例仍按 ×0.2（热同步没成功）：新开一条对话才会用上新值。
 ```
 
-### 被输出上限截断时自动续写
+用行配置 `notice: false` 关闭。提示本身是一条 `user/message`，模型下一轮也看得到 —— 这是有意的（让模型知道上下文刚被压过）。见[设计说明 §6](docs/design.md)。
 
-一轮以 `turn/end{reason: {kind: 'max-tokens'}}` 结束时(DeepSeek 的 `finish_reason: 'length'`)，
-插件会**替用户发一句"继续"**，让对话自己走下去，而不是停在那里等人手动发：
+### 被输出上限截断时会自动续写
+
+一轮以 `turn/end{reason: 'max-tokens'}` 结束时，插件**替用户发一句"继续"**（`agent.followup`，和人在界面上发言同一条路），让对话自己走下去：
 
 ```
 ▸ 上下文注入 · dsh-compact-agents · 上一轮被输出上限截断，已自动续写（1/2）
 继续                                    ← 插件以用户身份发出的（和用户手打的一样）
 ```
 
-- 次数上限由行配置 `maxAutoContinues` 控制，**默认 2**；`0` 或 `false` 关闭。用满后不再续写，
-  改为提示"已停止自动续写"，避免"截断 → 续写 → 又截断"无止境烧 token。
-- **任一轮正常结束即清零**，所以额度是"连续"次数，不会长期耗尽。
-- 发出的是标准 `user/message`（`source.kind: 'user'` + 冻结 + 唯一 id），走的就是人在界面上发消息
-  的同一条路(`agent.followup`)—— 不是往会话表面塞一条不唤醒模型的消息。
-
-> **为什么需要它**：压缩后 preset 常会把**下一个请求的输出预算**压到很小的窗口来"重新锚定"。
-> 若模型开着高推理，思考 token 与正文共享这份预算，很容易整份被思考吃光 → 正文 0 字被判截断。
-> 详见[设计说明 §7](docs/design.md)。
+次数上限由 `maxAutoContinues` 控制（**默认 2**，`0`/`false` 关闭），用满后改为提示，避免无止境烧 token；**任一轮正常结束即清零**，所以额度是"连续"次数。为什么需要它：压缩后 preset 常把下一个请求的输出预算压得很小，若模型开着高推理，思考 token 与正文共享这份预算、很容易整份被吃光 → 正文 0 字被判截断（[设计说明 §7](docs/design.md)）。
 
 ### 在界面里改这些参数
 
-**首选：设置里自成一页。** 打开 **设置** → 侧栏里找 **「压缩与自动续写」** —— 它和「通用设置 / 模型 / 内置插件 / Agent 预设」是**同级**的一项，点进去就是全部五个字段。这一处与 DSH 版本无关（0.1.5 与 0.1.6 都在），也不要求你先进插件页找到本包。
+**首选：设置里自成一页** —— 打开 **设置** → 侧栏 **「压缩与自动续写」**，它与「通用设置 / 模型 / 内置插件 / Agent 预设」**同级**（DSH 0.1.5 与 0.1.6 都在）。另外两处是**同一份表单、同一个控制器**：DSH ≥ 0.1.6 侧栏「插件」页里本包的详情页；DSH ≤ 0.1.5 的 **设置 → 插件 → 可配置** 折叠卡片。
 
-**第二处：侧栏「插件」页里本包的详情页**（DSH ≥ 0.1.6）。上游把插件配置搬到了这里，所以我们也在：侧栏「插件」→ 找到 `dsh-compact-agents` → 点进详情，描述与组件行之间是同一份表单（页自己带标题与面包屑，表单只有字段本身）；列表里那一行还带一句摘要，写着当前阈值与保留比例。
+![「设置 → 压缩与自动续写」页：左侧是真实界面截图，编号与右侧图例一一对应](docs/images/settings-section-annotated.png)
 
-**第三处：老设置页**（DSH ≤ 0.1.5）：**设置 → 插件 → 可配置** 里一张可折叠的「压缩与自动续写」卡片。
+> 图里「设置」左栏能看到它与「内置插件」同级。图里的数值是实拍机器上 preset 的**现值**（两张比例带「已覆盖」标记），不等于出厂默认 —— 默认值见下面表格。DSH ≤ 0.1.5 的老卡片长什么样，见 `docs/images/settings-card-annotated.png`（仅存档）。
 
-![旧版设置页里的「压缩与自动续写」卡片：编号 1 是入口，2 是卡片标题，3 是立即生效的两个字段，4 是新建会话生效的三个字段，5 是底部的放弃修改与保存](docs/images/settings-card-annotated.png)
+这个表单是**纯参数表单**：插件在界面上**没有自己的按钮**，压缩与自动续写都是**自动发生**的；框架自带的「重置」只是还原入口。DSH 里唯一的手动压缩入口是**自带**的人机命令 `/compact`（不是本插件）—— 本插件提供的是模型侧工具 `compact_agents`。
 
-> 上图是 **0.1.5 及更早**的界面。浏览器 half 现在**同时注册三处**（`settings.section` 自成一页、`plugins.bundle.config` 键 = 包名、`settings.plugin.item` 键 = settings 命名空间），正文只有一份、控制器只有一个，三处不会漂移；注册各自独立，一处失败另两处照旧。旧图暂未替换 —— 取新截图需要重启 GUI。
+字段名与生效时机 —— 界面按生效时机分成三组，组标题就是下面这三行：
 
-> 这个表单是**纯参数表单**：本插件在界面上**没有自己的按钮** —— 压缩与自动续写都是**自动发生**的，
-> 框架自带的「重置」只是还原入口，不会触发压缩。
-> DSH 里唯一的手动压缩入口是**自带**的人机命令 `/compact`（不是本插件）；本插件提供的是**模型侧**工具
-> `compact_agents`，由模型调用，不是给人点的。
+**立即生效 · 动作发生时读取，改完下一次压缩或续写即生效。**
 
-界面按**生效时机分成三组**，字段名就是卡片上那几个字：
-
-| 字段 | 含义 | 生效时机 |
+| 字段 | 含义 | 取值 |
 |---|---|---|
-| 压缩提示播报 | 是否在对话区播报「正在压缩上下文…／压缩完成」，以及遮蔽节点数与估算 token 数 | **立即生效** |
-| 自动续写次数上限 | 被输出上限截断时最多自动发几次"继续"（0 = 关闭） | **立即生效** |
-| 压缩触发阈值比例 | `0.35` = 上下文用到 350K 就自动压缩 | **保存即热同步**（同时写进预设，供之后新建的会话） |
-| 压缩后保留比例 | 压缩后按该比例留下最近的历史 | **保存即热同步**（同上） |
-| 受控阶段输出预算 | 每次压缩后会重新进入的"受控阶段"里，单个请求的输出预算 | **新建会话生效** |
+| `压缩提示播报` | 压缩完成后是否在对话区播报遮蔽节点数与估算 token 数，默认开启 | 下拉 `开启` / `关闭` |
+| `自动续写次数上限` | 回复被输出上限截断时自动续写的次数上限，0 表示关闭，默认 2 | 下拉 `0` `1` `2` `3` `5` `10` |
 
-表单里还会标出哪些字段是**你覆盖过的**（可以单独"重置"回 preset 里的值）。
+**写入预设并热同步 · 写进预设配置，同时热同步给正在运行的会话，下一次步边界即生效。**
 
-旧版那张卡片长什么样，见上面那张标注图；图里的编号与右侧图例一一对应。[docs/images](docs/images/README.md) 记录了这批图的来源与做法（真实界面截图 + 标注，不含任何个人信息），将来若要补别的截图，命名与插入位置也在那里写清。
+| 字段 | 含义 | 取值 |
+|---|---|---|
+| `压缩触发阈值比例` | 上下文占用达到窗口的这个比例时触发压缩；默认 0.35，即窗口 100 万 tokens 时约在 35 万处触发 | 0.05 – 0.95（DSH 出厂值是 `0.8`，1M 窗口 ≈ 800K，实际等于几乎不触发） |
+| `压缩后保留比例` | 压缩后保留的上下文比例，越小压得越狠；默认 0.05，即窗口 100 万 tokens 时至少留 5 万 tokens 的原文（按整条消息对齐，实际会略多） | 0.01 – 0.5 |
 
-表单（三处中的任何一处）能出现的前提是**宿主组成里有那一行**（本包作为 profile bundle 被登记、进而插进宿主 Loader）：只在 preset 里挂载的话，浏览器根本收不到 `lib/client.js`，症状是界面上既没有命名空间也没有表单、且毫无报错。**另外它还得在 profile 的 `dependencies` 里**，否则新版插件页会把它整条过滤掉。所以**首次安装后、以及任何改动宿主组成之后，都要重启 `dsh`**（根因见[设计说明 §8.4](docs/design.md) 与 [§8.5](docs/design.md)）。
+**新建会话生效 · 写进预设配置，只在新会话读取，已在运行的会话不受影响。**
 
-设计要点（为什么分成三组）：
+| 字段 | 含义 | 取值 |
+|---|---|---|
+| `受控阶段输出预算` | 压缩后那一小段"受控阶段"里，单次请求的输出 token 预算；它是**输出**预算，`max_tokens` 把思考（reasoning）token 也算在内，所以 1024 时可能光思考就吃满、正文一个字都出不来 | 整数，1024 – 200000 |
 
-- **立即生效的那两个值是本插件自己的**，会话事件发生时才读，所以改完立刻算数。
-- **中间那两个（阈值 / 保留比例）写的是 preset 文件，但保存时会热同步**给正在运行的会话：
-  新值直接进运行中实例，下一次步边界就用；热同步万一进不去，压缩提示里会自己点明"本会话仍是旧值、
-  新开一条对话才生效"，不会假装成功（见[对话区的压缩提示](#对话区的压缩提示)）。
-- **最后一个（受控阶段输出预算）属于 preset 里的另一个插件**（`tool-bootstrap`），插件没法替它改
-  运行时策略，所以只改 **preset 文件本身**：preset 的挂载会记录文件 stamp，stamp 变了就给**之后新建的
-  会话**开新一代 —— 不用重启 DSH，但已经在跑的会话不受影响。写盘前会落一份 `<preset>.bak-compact-agents`
-  备份，并用临时文件 + rename 原子替换；只改目标那一行，preset 里的注释与排版原样保留。
+表单还会标出哪些字段是**你覆盖过的**，每个字段旁的「重置」回到预设里的值。
 
-> `settings: false` 可以整体关掉这个设置面（工具与提示不受影响）。
-
-### 每个参数到底在管什么
-
-上面那张表只说了"字段是什么意思"。这一节说清**这个参数到底在管什么、往哪边调会怎样**。
-机制层面的理由（为什么这样设计）见[设计说明 §9](docs/design.md)。
-
-先看一次压缩从头到尾发生了什么（以 1M 窗口 ≈ 100 万 tokens、preset 用 `0.35` / `0.05` 为例）：
-
-```
-压之前   系统提示 1 万 + 历史 34 万 = 35 万
-         └─ 撞到 thresholdRatio 0.35 的触发线 → 开始压缩
-
-压缩中   把"最近 5 万"以外的部分【遮蔽】掉（不是删除，是移出发送内容）
-         └─ 换成一段摘要；压缩提示播报里报的"遮蔽节点数"就是它
-
-压之后   系统提示 1 万 + 摘要 0.3 万 + 最近原文 5 万 ≈ 6.3 万
-         └─ 这"最近 5 万"由 retainRatio 0.05 × 窗口 100 万 决定
-
-随后     进入【受控阶段】：接下来每次请求最多输出 bootstrapMaxTokens tokens
-```
-
-三个数各管一段，互不重叠：`thresholdRatio` 管**什么时候压**，`retainRatio` 管**压完留下多少原文**，
-`bootstrapMaxTokens` 管**压完那几轮最多让它说多少**。没有一个参数管"摘要写得好不好"——那是摘要模型的职责。
-
-把上面这条链路画成图，就是一次压缩的全过程（数值与文字版一致）：
-
-```mermaid
-flowchart TD
-    A["压缩前：系统提示 1 万 + 历史 34 万<br/>≈ 35 万 tokens"] --> B["撞到 thresholdRatio 0.35 的触发线<br/>（1M 窗口 × 0.35 = 35 万）"]
-    B --> C["压缩：把「最近 5 万」以外的部分<br/>遮蔽成一段摘要（不删除，只移出发送内容）"]
-    C --> D["压缩后：系统提示 1 万 + 摘要 0.3 万 + 最近原文 5 万<br/>≈ 6.3 万 tokens"]
-    D --> E["「最近 5 万」= retainRatio 0.05 × 1M 窗口"]
-    D --> F["进入受控阶段：<br/>此后每次请求最多输出 bootstrapMaxTokens"]
-```
-
-主线只有一条：**达线 → 遮蔽成摘要 → 进入受控阶段**。下面按段拆开讲。
-
-#### 压缩后保留比例 `retainRatio`
-
-本质是**保真的边界**：这条线以内的内容**原文一字不差**保留，线以外只剩摘要。
-
-- 它的单位是**窗口比例**，不是消息条数：`0.05` × 1M = **保留最近 5 万 tokens 原文**。
-- **为什么必须留一块原文**：摘要一定丢细节；而最近发生的内容恰恰最可能马上要用（刚贴的代码、刚提的
-  需求、刚纠正的错误）。被总结掉就会出现"我刚说过的它当没看见"。
-- **调小的症状**：`0.01` = 只留 1 万，一个几百行的代码文件差不多就 1 万 tokens，压完立刻被总结掉
-  —— 模型转头就"忘"。
-- **调大的症状**：`0.2` = 留 20 万，压完还剩约 25 万，很快又撞触发线 → 反复压缩、反复打断。
-- **建议**：一般对话 `0.05` 够用；**经常贴大文件可调到 `0.08~0.1`**。
-
-#### 受控阶段输出预算 `bootstrapMaxTokens`
-
-它是**输出**预算，不是输入预算：压缩结束后那一小段时间里，**每次请求最多让模型输出多少 tokens**。
-
-- **最容易踩的坑：`max_tokens` 把思考（reasoning）token 也算在内。** 所以 `1024` 时可能光思考就
-  吃满预算、正文一个字都出不来 —— 表现为"空回复"或话说到一半硬截断。（这正是本插件存在的起因之一：
-  此前观测到的 4 次截断全是 `outputTokens=1024`、正文 0 字。）
-- **为什么要"受控"**：刚压缩完，模型拿到一段崭新摘要，很容易一口气写一大篇，把刚清出来的空间**又塞满**，
-  前一次压缩就白做了。所以 preset 在**每次压缩结束后**把会话打回受控状态、强制卡住输出；等会话"晋升"
-  （解除受控）后恢复模型本身的大预算。**它是压缩之后的一段临时限流，不是永久设置。**
-- **调小**：`16384 → 1024` 省，但极易截断。
-- **调大**：`32768` 不容易截断，但受控阶段每轮都可能很贵。
-- **与「自动续写」配套**：预算太小 → 回复被截断 → 自动续写自动发一句"继续"把话说完，所以现象是
-  **锯齿状输出**（说一半 → 自动继续 → 接着说）。`16384` 是折中值。
-- **建议**：常出现断在半句或空回复 → 调到 `32768`；压完那几轮输出长得离谱 → 保持 `16384` 或更小。
-
-#### 速查表
+调参速查（机制与取舍见[设计说明 §9](docs/design.md)）：
 
 | 你想要的 | 怎么调 |
 |---|---|
@@ -401,182 +166,90 @@ flowchart TD
 | 受控阶段老被截断（反复自动续写） | 输出预算调大（`32768`） |
 | 压缩太频繁、嫌它老在总结 | 阈值调大（`0.3~0.4`） |
 
-#### 生效时机与恢复默认
+> 行配置 `notice: false` / `maxAutoContinues: 0` / `livePresetParams: false` 分别关掉提示、自动续写与热同步；`settings: false` 整体关掉设置面（工具与提示不受影响）。
 
-- 前三个（压缩触发阈值、保留比例、受控阶段输出预算）**写进 preset 文件**，所以**只对之后新建的会话生效**，
-  已经在运行的会话不受影响。
-- 后两个（压缩进度提示、自动续写次数）是本插件自己的，**改完立即生效**。
-- **想恢复默认**：各字段旁边的「重置」按钮回到 preset 里的值；`thresholdRatio` 填 `0.8` 即 DSH 出厂值
-  （约等于不触发）。
+## 排错
 
-## 工作原理
-
-对每个目标调用 `ctx.compaction.compactNow(agent, signal)`，然后把结果翻译成报告行。
-
-**不绕过契约自身的约束**：
-
-| 约束 | 原因 |
-|---|---|
-| 目标必须 **idle** 才能立即压 | `compactNow` 走 `agent.runMaintenance`，agent 正在跑 turn 时会同步抛 `ManualCompactionError('busy')` |
-| **调用者自己永远 busy** | 它此刻正在执行这个工具调用 —— 所以走 `queue`，在**本轮结束时**补齐 |
-| 只有**顶层 agent** 能扫描 | 防止成员互相压、或压队长；子代理只能用 `scope: "self"` |
-| 一次一个摘要模型调用、**串行** | 每个目标都要真实调一次模型；排队的那部分在 turn 之后跑，不计入工具超时 |
-| 只覆盖**活着的**会话 | 已结束/已归档的会话没有 live agent，`compactNow` 需要 Agent 句柄；压死会话也不省 token |
-| 压缩**不会**修好"单个超大单元" | 契约明确：单个过大的保留单元或请求信封无法靠表面压缩修复，这种情况回报 `noop` |
-
-细节(契约出处、事件语义、踩过的坑)见[设计说明](docs/design.md)。
-
-## 状态与副作用
-
-- **零持久化**：不写任何文件、不建账本、不改配置；压缩结果由 DSH 自身的会话日志记录。
-- **零网络**：只有一次摘要模型调用(由 `compaction-basic` 经宿主 LLM 通道发出)，插件本身不出站。
-- **不改变自动策略**：`compaction-basic` 的阈值与保留比例由 preset 决定，本插件不覆盖。
-- **可在任何时候卸载**：删掉挂载行与宿主组成里的 bundle 登记即可（`uninstall.mjs` 两处都还原），不留残留状态；宿主侧同样要重启 `dsh` 才生效。
-- **提示会进入会话（含模型上下文）**：它是一条 `user/message`，所以模型下一轮也能看到 —— 这是
-  有意的（让模型知道上下文刚被压过）。代价是每次压缩多几十个 token，且下一次压缩会把它一并遮蔽。
-  不想要就用 `notice: false` 关掉。
-- **自动续写会以"你"的身份发言**：那条 `继续` 的 `source.kind` 是 `user`，在对话区就是一条普通
-  用户气泡（也有提示行说明是插件自动发的）。这是刻意的 —— 用 plugin 来源可能被 preset 的
-  `messageSources` 白名单过滤出模型表面。不想要就用 `maxAutoContinues: 0` 关掉。
-
-## 架构
-
-```
-dsh-compact-agents
-├── index.js                     # preset 行的入口:注册 compact_agents 工具 + 会话监听(压缩提示/自动续写)
-├── client-host.js               # 宿主组成那一行的入口:只做两件事(下发浏览器 half + 注册设置命名空间)
-├── cordis.patch.yml             # dsh.bundle.patch:往宿主组成里插 compact-agents-client-host 行
-├── settings.js                  # 设置面:settings 命名空间 + preset 参数读写(两个入口共用)
-├── lib/client.js                # 浏览器 half:插件页的配置表单 + 旧设置页的折叠卡片(同一份正文,手写无构建)
-├── package.json                 # ESM 包声明(main → index.js;dsh.client → lib/client.js;dsh.bundle.patch → cordis.patch.yml)
-├── scripts/
-│   ├── lib/presets.mjs          # 各脚本共用:路径常量 + preset 发现(只有一处定义)
-│   ├── install.mjs              # 一键安装/修复:junction + preset 行 + profile bundle 与 dependencies(幂等,带 .bak)
-│   ├── uninstall.mjs            # 卸载:移除挂载行 + 删除自己建的 junction / bundle 与依赖登记
-│   ├── validate-presets.mjs     # 校验挂载行/阈值/路径/README 徽章/profile 依赖
-│   ├── inspect-presets.mjs      # 只读自检:真实 preset 里读到的生效值是多少
-│   ├── compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离(只碰临时夹具)
-│   ├── settings-test.mjs        # 设置面测试(真 schemastery + preset 文本手术)
-│   ├── client-test.mjs          # 浏览器 half 测试(假 __ModuleLoader__ + 桩 require)
-│   ├── integration-test.mjs     # 真机加载测试(真 Context + 真 ToolRuntime)
-│   ├── deferred-test.mjs        # 排队补压行为测试(假 ctx)
-│   ├── dryrun-test.mjs          # `--dry-run` 守卫:预演绝不真删(沙箱 DSH_HOME)
-│   └── selftest.mjs             # 模块与 defineTool 规格自检
-├── docs/
-│   └── design.md                # 设计说明:契约出处、约束、踩过的坑、测试矩阵
-└── node_modules/@deepseek-ai/   # install.mjs 建的 junction(不进版本库)
-    ├── dsh-tools    -> <dsh checkout>/packages/core/tools
-    ├── cordis       -> <dsh checkout>/vendor/cordis
-    └── schemastery  -> <dsh checkout>/vendor/schemastery
-```
-
-此外 `install.mjs` 还会在该 profile 下建一个联接 `<DSH_HOME>/profiles/<profile>/node_modules/dsh-compact-agents -> <本仓库>`，并把包名登记进 profile 的 `dsh.profile.bundles`(见下)。
-
-**两处挂载点，缺一不可**：
-
-| 挂载点 | 怎么来的 | 负责 |
+| 症状 | 原因 | 处理 |
 |---|---|---|
-| preset 行 | `install.mjs` 往 `<DSH_HOME>/.agent-presets/*/agent.cordis.yml` 的 `compaction` 组追加 | `compact_agents` 工具、压缩进度提示、自动续写。必须留在 `compaction` realm 内，否则解析不到 `ctx.compaction` |
-| 宿主组成里的 bundle 行 | `install.mjs --profile`：profile 的 `dsh.profile.bundles` 登记本包 → 本包 `dsh.bundle.patch`(`cordis.patch.yml`)插入 `id: compact-agents-client-host` / `name: 'dsh-compact-agents/client-host'` | 被 `ClientModuleRegistry` 扫到(下发 `lib/client.js`)、在宿主根注册 settings 命名空间 |
+| 设置里没有「压缩与自动续写」 | 装完没重启 `dsh`；客户端模块的 rev 只在启动时算 | 重启一次 `dsh` |
+| 表单在，但侧栏「插件」页里整条看不到本包 | 包名只写进了 `dsh.profile.bundles`、没写进 profile `dependencies` —— 新版插件页只列 `installed \|\| optional \|\| error` 的 bundle，**毫无报错** | `node scripts/install.mjs`（两处都写），再重启；`validate-presets.mjs` 会把这种半装状态判成 FAIL |
+| 界面上既没有命名空间也没有表单，且**毫无报错** | 只挂了 preset、没登记成 profile bundle —— 浏览器根本收不到 `lib/client.js` | 同上（[§8.4](docs/design.md)） |
+| 老设置页（DSH ≤ 0.1.5）里卡片凭空消失，也不报错 | 老槽位 `settings.plugin.item` 在 ≥ 0.1.6 已无渲染方；`slots.inject` 对没人声明的槽位是**静默**的，注册上去既不抛错也不显示 | 用「设置 → 压缩与自动续写」或插件页详情页，别依赖老槽位（[§8.5](docs/design.md)） |
+| 预设文件里明明是新阈值，会话仍按旧值压 | 热同步没进去（配置形状变了／写不进去）；提示里会同时报出两个值 | 新开一条对话才会用上新值（[§6](docs/design.md)） |
+| 压缩提示里出现"新开一条对话才会用上新值" | 自我反证发现引擎仍按旧阈值判（证据是下一次**策略自己决定**的压缩） | 同上 |
+| 升级 `@linxin666/*` 之后 `compact_agents` 工具没了 | 随包发行的 preset 被它自己的升级整份重写，我们的挂载行丢了 | 重跑 `node scripts/install.mjs`；`validate-presets.mjs` 会先告诉你是哪一份 |
+| 自己改的 preset 不生效 | 同 id 的**发行** preset 会遮蔽用户 preset（`agent-presets` 的 roots 顺序是随包最先、用户最后） | 改随包那份（并在下次升级后重跑安装脚本），或给自建 preset 换个 id |
+| 插件页里关掉本插件，`compact_agents` 却还能用 | 那个开关只动宿主组成里的 bundle 行，工具由 **preset 行**提供 | 要整体停用：`node scripts/uninstall.mjs` |
 
-`client-host.js` 刻意 `inject = []` —— 宿主根上没有 `compaction` 服务(它由 preset realm 内的 `compaction-basic` 提供)，声明依赖只会让这一行永远 pending。它只做两件事：让客户端模块表扫到本包、在宿主根上注册 settings 命名空间。
-
-**为什么 preset 一处不够**：`ClientModuleRegistry`(`packages/client/modules/src/index.ts`)只遍历**宿主 Loader 的 entries**，而它的 `internal/plugin` 监听里有 `const entryName = fiber.entry?.options.name; if (entryName === undefined) return` —— `fiber.entry` 为空的"子插件或手动挂载"被直接丢弃；preset 行正是 `agent-presets` 用 `internal.import` 手动挂载的，不是 loader 行。结果就是：只挂 preset 时浏览器 half 永远不下发，设置页里既没有命名空间也没有卡片、**且毫无报错**。详见[设计说明 §8.4](docs/design.md)。
-
-插件本体只 import 两个东西：`defineTool`(来自 `@deepseek-ai/dsh-tools`)，以及**动态** import 的 `@deepseek-ai/schemastery`(用来声明设置的 schema)。
-后两个 junction 只有设置面与测试需要；**缺了 schemastery 只会少一个设置面，不会让插件挂掉**（动态 import 失败只记一条 warn）。
-
-**为什么 preset 行必须写绝对路径**：`agent-presets/src/specifier.ts` 的分类函数对绝对盘符路径走 `pathToFileURL`(注释写明"专为 Windows 盘符路径所必需")，变成 `file:` 行；而**裸包名在 preset 里是从 harness 解析的**，指向用户目录的包会解析失败。
-
-## 开发与验证
+## 更新 / 卸载
 
 ```sh
-node --check index.js                 # 语法自检
-node scripts/selftest.mjs             # 模块导入 + defineTool 规格 + 参数枚举
-node scripts/deferred-test.mjs        # 忙→排队→下次 idle 补压(假 ctx，不起 DSH)
-node scripts/integration-test.mjs     # 真机:真 Context + 真 ToolRuntime，全链路
-node scripts/compose-test.mjs         # 组装验证:真 FileSettingsProvider + 复刻 preset 隔离
-node scripts/inspect-presets.mjs      # 只读:表单将显示的初值
-node scripts/validate-presets.mjs     # preset 挂载行与阈值 + README 徽章 + profile 依赖
-node scripts/install.mjs --dry-run    # 安装预演(不改盘)
+git -C dsh-compact-agents pull
+node scripts/install.mjs              # 更新后重跑，幂等
+node scripts/uninstall.mjs --dry-run  # 卸载：先预览
+node scripts/uninstall.mjs            # 移除挂载行 + bundle 与依赖登记 + 自己建的 junction
 ```
 
-`integration-test.mjs` 覆盖假 ctx 测不到的东西，且**零模型调用、零成本**(只给 `systemPrompt` / `compaction` / `agents` 三个最小桩服务)：`inject` 真的解析、`ctx.tools.register(defineTool(...))` 真的被注册表接受、`ctx.tools.get()` 查得到、`ctx.tools.executionMode()` 真的判成 `exclusive`、端到端 `execute()` 返回值真的过 output schema、`render()` 真的产出文本块、非顶层 sweep 真的被拒。断言清单见[设计说明](docs/design.md#4-验证矩阵)。
+卸载只删自己加的东西：preset 里的注释、`!!js` 表达式、其它行一律不动（实测安装 → 卸载后文件**逐字节回到原状**），profile `package.json` 按行摘除、保留原排版。插件目录与 `.bak` / `.bak-compact-agents` 备份不删，自行处理。卸载同样改了宿主组成，**重启 `dsh` 后表单才消失**。
 
-`compose-test.mjs` 则用**检出里真实的 `FileSettingsProvider`**(写到临时文件)与复刻的 preset `isolate` 语义，验证设置命名空间在真实服务 + 真实隔离作用域下也注册得上；它还会刻意**先挂宿主组成那一行、后挂 settings 服务**，证明 `ctx.inject` 的等待路径真的在服务到场后完成注册。
+## 深入设计
 
-> ⚠️ **测试隔离教训**：`compose-test.mjs` 会走真实的 `update → watch → 写回` 链路，必须先用 `setPresetFilesForTest()` 把 preset 读写指向**临时夹具** —— 第一版漏了这一步，于是这个"验证"脚本**真的改写了用户的 preset**（把 `thresholdRatio` 写成了 0.42）。现在脚本开头会拍下真实 preset 的**全文快照**、结尾逐字节比对：只要有一个字被改动就立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。判据刻意**不是**"阈值必须是某个数字"——`thresholdRatio` 本来就是给人调的旋钮，硬编码期望值会把"用户调过参"误报成"测试污染了配置"。凡是会写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
+正文只留结论；根因、契约出处、踩过的坑与验证矩阵都在 [docs/design.md](docs/design.md)：
+
+| 想知道的 | 看 |
+|---|---|
+| 为什么 DSH 没有现成的模型侧压缩入口 | [§1](docs/design.md) |
+| 覆盖范围、事件语义、忙碌与排队 | [§2](docs/design.md) |
+| 挂载与路径解析、ESM 模块缓存等坑 | [§3](docs/design.md) |
+| 验证矩阵：每个脚本断言什么 | [§4](docs/design.md) |
+| 与自动压缩（`compaction-basic`）的关系 | [§5](docs/design.md) |
+| 压缩提示与阈值热同步 | [§6](docs/design.md) |
+| 输出上限截断与自动续写 | [§7](docs/design.md) |
+| 设置面：宿主组成那一行（§8.4）、两处静默失败（§8.5）、已知限制（§8.6）、为什么自成一页（§8.7） | [§8](docs/design.md) |
+| 压缩参数的机制与调参取舍 | [§9](docs/design.md) |
+
+代码结构：`index.js`（preset 行入口：注册工具 + 会话监听）、`client-host.js` + `cordis.patch.yml`（宿主组成行入口：下发浏览器 half + 注册设置命名空间）、`settings.js`（设置命名空间与 preset 参数读写）、`lib/client.js`（浏览器 half，手写单文件、无构建步骤 —— **界面文案的唯一权威**）、`scripts/*`（安装 / 卸载 / 校验 / 测试）。
+
+开发：
+
+```sh
+node scripts/validate-presets.mjs   # 挂载行 / 路径 / 阈值 / README 版本徽章 / profile 依赖
+node scripts/inspect-presets.mjs    # 只读：表单将显示的初值
+npm test                            # 自检 / 行为 / 真机集成 / 设置面 / 浏览器 half
+```
+
+改了插件的 `.js`（含 `client-host.js` / `settings.js`）或宿主组成相关文件（`cordis.patch.yml`、`package.json` 的 `dsh.*` 声明），**必须重启 `dsh`** —— ESM 模块缓存按 URL 命中，重新挂载 preset 不会清它（[§3.4](docs/design.md)）；只改 preset 则新开一条对话即可。凡会写盘的测试必须显式指向临时夹具，不能依赖"我以为它不会写"（[§8.4](docs/design.md)）。
 
 ## 已知限制
 
-- **只覆盖活着的会话**：已结束/已归档的会话拿不到 Agent 句柄；历史会话无法事后压缩(压了也不省 token)；
-- **压缩不是免费的**：每个目标要真实调一次摘要模型，本身有 token 成本——目标是拿它换掉后续每次调用重发的巨额前缀；
-- **单个超大保留单元无法修复**：契约明确表面压缩修不了这种情况，会回报 `noop`；
-- **`scope: "self"` 是异步的**：工具立刻返回 `queued`，真正的压缩发生在本轮 turn 结束之后，结果写进 DSH 日志(`ctx.logger.info`)而不是工具返回值；
-- **已 composed 的会话拿不到新工具**：preset 改动只对新会话生效，老会话需新开(或重启 DSH，但那会丢成员会话)；
-- **不做孤儿数据/状态清理**：本插件无状态，无需清理。
-- **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；`npm i -g` 全局安装的布局未验证(全局安装下这两个包的落点不同，需要另行适配)。
-- **插件页的启用/停用开关只管浏览器 half**：插件页上关掉本插件，动的是宿主组成里那一行（`compact-agents-client-host`）—— 表单不再出现；而 `compact_agents` 工具由 **preset 行**提供，与这个开关无关，仍然照常挂载。要整体停用，用 `node scripts/uninstall.mjs`。
-- **随包发行的 preset 会被它自己的插件升级重写**：`<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行是安装时插进去的，插件升级会整份重写掉它（实测撞上过：`@linxin666/dsh-liangshen` 升级后默认 preset 里就没有 `compact-agents` 行了，而用户自建的 `~/.dsh/.agent-presets/liangshen` 又被随包同名 preset **遮蔽**——`agent-presets` 的 roots 顺序是"随包最先、用户目录最后"，同 id 前者胜）。升级后重跑一次 `node scripts/install.mjs` 即可，`node scripts/validate-presets.mjs` 会先告诉你少了哪一份。
+- **只覆盖活着的会话**：已结束/已归档的会话拿不到 Agent 句柄，事后压缩也不省 token。
+- **压缩不是免费的**：每个目标要真实调一次摘要模型，本身有 token 成本。
+- **单个超大保留单元无法修复**：契约明确表面压缩修不了这种情况，回报 `noop`。
+- **`scope: "self"` 是异步的**：工具立刻返回 `queued`，真正的压缩发生在本轮 turn 结束之后，结果写进 DSH 日志而不是工具返回值。
+- **已 composed 的会话拿不到新工具**：preset 改动只对新会话生效；老会话需新开（重启会丢成员会话）。
+- **不做孤儿数据/状态清理**：本插件无状态（零持久化、零网络、不改变自动压缩策略）。
+- **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；全局 `npm i -g` 的布局未验证。
+- **插件页的启用/停用开关只管浏览器 half**：关掉它，动的是宿主组成里那一行（`compact-agents-client-host`），表单不再出现；而 `compact_agents` 工具由 **preset 行**提供，与这个开关无关，照常可用。
+- **随包发行的 preset 会被它自己的插件升级冲掉**：`<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行是安装时插进去的，插件升级会整份重写掉它；重跑 `node scripts/install.mjs` 即可。同一处还有一层遮蔽：同 id 的发行 preset 会盖掉用户自建的 preset。
 
 ## 更新历史
 
-- **v0.8.2** — **文档更正（无代码改动）**：界面是按**生效时机分三组**的（立即生效 / 写入预设并热同步 / 新建会话生效），而「在界面里改这些参数」下面那张表还停在 v0.7.0 之前的说法 —— 它把**阈值与保留比例**写成"新建会话生效"（其实保存时就热同步进运行中的会话了），字段名也和卡片上的字不完全一样。现在表里的分组与字段名（`压缩提示播报`、`自动续写次数上限`）与卡片**逐字对齐**，"为什么分成两种生效时机"那段也重写成三组：本插件自己的两个值在事件发生时读取、改完立刻算数；阈值与保留比例写预设文件的同时热同步；受控阶段输出预算属于另一个插件，只写预设文件、供之后新建的会话读取。
-
-- **v0.8.1** — **参数表单回到"设置里自成一页"**：新增官方 `settings.section` 槽位的注册（`id: compact-agents`、`order: 26`、侧栏那一行文字「压缩与自动续写」），于是 **设置 → 「压缩与自动续写」** 与「通用设置 / 模型 / 内置插件 / Agent 预设」同级 —— 这个位置与宿主版本无关（0.1.5、0.1.6 都在），也不必先钻进插件页找到本包。三处注册共用同一份正文（`formBody`）与同一个控制器，各自 `try/catch`，一处失败不影响另外两处。起因见 v0.8.0：上游把插件配置搬去插件页后，老槽位 `settings.plugin.item` 已无渲染方，用户明确要求"和插件同级"，而不是挂在插件页里面。
-
-- **v0.8.0** — **跟上 DSH 0.1.6 的插件页**。上游 `90af3110b7 feat(web): host plugin configuration on the Plugins page` 把插件配置从「设置」搬到侧栏新的「插件」页（`ui-plugin-manager`），老槽位 `settings.plugin.item` 的渲染方 `ConfigurablePluginsTab.tsx` 被删掉 —— 我们那张卡片于是**凭空消失、毫无报错**（`ctx.slots.inject` 对没人声明的槽位是静默的，注册上去既不抛错也不显示）。现在同一份正文同时注册进两个槽位：新版 `plugins.bundle.config`（键是**包名**）画表单、旧版 `settings.plugin.item`（键是 settings 命名空间）画折叠卡片；两边共用同一个控制器与同一份正文，不会漂移；一个槽位注册失败也不会连累另一个。第二处静默失败一并修掉：新版插件页只列 `installed || optional || error` 的 bundle，而 `installed` 的判据是包名在不在 profile 的 `dependencies` 里 —— 只登记 `dsh.profile.bundles` 的旧安装会被**整条过滤掉**，所以 `install.mjs` 现在两处都写（优先走官方 `dsh plugin add`，失败或 `--no-cli` 时回落到行级手写登记，写前留 `.bak-compact-agents`、写坏自动回滚），`validate-presets.mjs` 把"在 bundles 里却不在 dependencies 里"直接判成失败。`client-test.mjs` 相应覆盖：两个槽位的注册、表单形状（不套卡片外壳）、列表项一行摘要、命名空间未就绪时的降级，以及槽位互不连累。
-
-- **v0.7.4** — README 顶部的版本徽章和 package.json 对齐，并加进 npm test 的校验里。起因是查市场收录时顺手发现：徽章还写着 0.4.0，而 package.json 已经 0.7.x —— 市场抓的正是 README，别人在 dsh.market 上看到的版本号就是那个过时的数字。手写的徽章靠自觉必然再忘一次，所以让 validate-presets 在两者不一致时直接失败。
-
-- **v0.7.3** — 改预设参数时顺手把行尾那句**带数字**的注释也刷新掉。起因是真实撞上的一幕：卡片把 retainRatio 从 0.05 改成 0.02 之后，文件里留着`retainRatio: 0.02     # 压缩后保留最近 5% 窗口 = 50K 原文` —— 值与解释自相矛盾，而这文件正是用户唯一能直接看到的地方。现在规则很窄：注释里**出现数字**的（说明它是照着旧值算出来的）换成按新值生成的规范说明；没有数字的注释是用户自己的话（为什么这么设），一律原样保留；本来没注释的行也不替他加。
-
-- **v0.7.2** — 界面文案统一用中文：卡片的「写入 preset 并热同步」改成「写入**预设**并热同步」，提示里的「preset 文件里现在是 ×…」改成「预设文件里现在是 ×…」，字段说明里的「写进 preset，新会话生效」也一并更正（阈值与保留比例早就是热同步，不再是新会话生效）。术语取自 DSH 官方中文界面（Agent **预设**）；`token` 一词保留原样，因为 DSH 自己的中文文案就是这么写的（“已压缩 N 条历史记录（约 X tokens）”），换成“词元”反而不一致。
-
-- **v0.7.1** — 给热同步加一道**效果校验**：写进去了不代表引擎吃了。补丁落下时留一个待验证（并预先查好上下文窗口 —— 压缩发生时那条路径是同步的，来不及查），拿**策略自己决定**的下一次压缩反算：达线判定是 `tokens >= 窗口 × 阈值`，所以把阈值从 0.2 抬到 0.5 后若仍在 250K（1M 窗口）就压，就说明引擎还在按 0.2 判。判定成立就不再自称生效，触发线按 0.2 报并给出新开一条对话这条正路。手动压缩（`/compact` 与 `compact_agents` 工具触发的那次）在任意 token 数上都可能发生，一律不采信，免得冤枉引擎；反证顺序也必须是先验旧的、再同步新的，否则会拿按旧阈值判出来的本次压缩当新阈值的证据。
-
-- **v0.7.0** — **阈值与保留比例不必再等新会话**：设置卡片保存后，插件把新值**热同步**进正在运行的 `compaction-basic` 实例（它的 `config` 是普通自有属性 —— 对象虽被 `deepFreeze`，引用可换 —— 而压力判定每次调用都重新读它），下一次步边界就按新阈值判：历史会话直接生效，不用新开对话、更不用重启。只碰这两个旋钮：`bootstrapMaxTokens` 属于 `tool-bootstrap`，它在 `apply()` 里把值捕获进闭包，改不动，仍只对新会话生效；配置里带 `modelPolicies` 时只改命中那条（与引擎 `resolveTargetPolicy` 同款匹配）。写进去后会读回校验；读不到/写不进去就退回老行为，并由压缩提示点明两个值与出路。行配置 `livePresetParams: false` 关闭。设置卡片因此多出一组「写入 preset 并热同步」。
-
-- **v0.6.1** — 压缩提示报出**本会话实际生效的触发线**（`· 触发线 ×0.35`），并在热同步进不去时直接写明两个值与"新开一条对话才会用上新值"。起因是一个必然会撞上的困惑：preset 里的压缩参数在**会话建立时**读进 `compaction-basic` 并深冻结，而旧提示只报 token 数，看不出用的是哪一档阈值。同时把设置卡片里那句会误导人的 hint 改成显式说明"默认 0.35"——它此前写成"（0.35 = 350K tokens）"，紧挨着一个用户自己设的 0.5，读起来像当前值。
-
-- **v0.6.0** — 压缩触发阈值默认值由 `0.2`(200K) 调成 `0.35`(350K)：默认值偏小会让压缩来得太早、把还没用上的空间提前总结掉，`0.35` 更接近"快满了再压"。同时把 `compose-test.mjs` 的真实 preset 守卫从"硬编码 `thresholdRatio` 必须是 0.2"改成"与开头全文快照逐字节一致"，修掉用户把阈值调成别的值后守卫恒失败的假阳性。
-
-- **v0.4.0** — 参数搬进「设置」界面：
-  - 新增**设置面**：宿主侧注册 settings 命名空间 `compact-agents`（模式与官方一致 ——
-    slot 契约原话是 "Keying on the namespace is what lets a plugin distributed outside this
-    repository contribute a card"），浏览器 half `lib/client.js` 在 `settings.plugin.item`
-    槽里注册同一命名空间的卡片，于是「设置 → 插件」里多出一张「压缩与自动续写」；
-  - 五项可改：压缩触发阈值比例、压缩后保留比例、受控阶段输出预算、压缩进度提示、自动续写次数。
-    前三项属于 preset 里的其它插件，所以**由本插件写进 preset 文件**（写前备份 + 原子替换 +
-    只改目标行，注释与排版保留），新建会话时自动开新一代；后两项是本插件自己的，**立即生效**；
-  - 浏览器 half 是**手写的单文件 bundle**（DSH 的客户端模块系统就是惰性 CJS 表，不需要打包器），
-    只 require 种子模块 `react` 与 `@deepseek-ai/dsh-client-store`，因此本项目仍然零 npm 依赖；
-  - 新增两个测试：`settings-test.mjs`（真 schemastery + 真 cordis Context + preset 文本手术，
-    全程用临时文件，不碰真实配置）与 `client-test.mjs`（假 `__ModuleLoader__` + 桩 require，
-    真 React 渲染断言）；
-  - `install.mjs` 多建一个 `@deepseek-ai/schemastery` 联接（缺了只会少一个设置页，插件照常工作）。
-
-- **v0.3.0** — 被输出上限截断时自动续写：
-  - 新增**自动续写**：一轮以 `turn/end{reason: 'max-tokens'}` 结束时，替用户发一句"继续"
-    (`agent.followup`，与人在界面上发言同一条路)，让对话自己走下去。行配置 `maxAutoContinues`
-    控制连续次数(默认 2，`0`/`false` 关闭)，用满后改为提示，任一轮正常结束即清零；
-  - 实机定位到一个典型诱因并写进[设计说明 §7](docs/design.md)：**压缩后 preset 会把下一个请求的
-    输出预算压到很小的窗口来"重新锚定"**，若模型开着高推理，思考 token 与正文共享该预算，很容易
-    整份被思考吃光 → 正文 0 字被判截断。同一会话日志里 4/4 次截断都出现在 `compaction/end`
-    之后 9~12 条记录，全部 `reasoning=1024/1024`、正文 0 字。
-
-- **v0.2.0** — 压缩过程不再静默：
-  - 新增**对话区可见的压缩提示**。原本 `compaction/start` 到 `compaction/end` 之间对话区没有任何节点
-    —— 自带自动压缩也一样(只有"轨迹"面板显示 `正在压缩上下文…`)—— 观感就是卡住。现在插件订阅
-    `session/event`，在生命周期两端各追加一条插件来源的 `user/message`，渲染形态与框架自己的
-    "上下文注入"完全一致，可用行配置 `notice: false` 关闭；
-  - 工具回执补上**压缩前后 token 数**：`beforeTokens` / `afterTokens`(`-1` 表示计量服务不可用)，
-    渲染成 `~213,400 → ~49,800 tokens`。
-
-- **v0.1.0** — 首个版本：`compact_agents` 工具(4 种 scope、忙则排队)、一键安装/卸载/校验脚本、四层验证(自检 / 行为测试 / 真机集成测试 / preset 校验)。
-  - 安装脚本支持**失效路径自愈**(项目移动/改名后重跑即修正)与 `--force` 重新指向；
-  - DSH 检出位置改为**自描述探测**(显式参数 → 既有联接 → PATH 上的 `dsh` 启动器 → profile → 家目录)，脚本与文档中不含任何本机盘符；
-  - `uninstall.mjs` 只移除**指向本项目**的挂载行，避免克隆两份时误拆别人的安装。
+- **v0.8.3** — **文档与配图重做（无代码改动）**：README 从 583 行压到 255 行，按「装 → 用 → 排错 → 深入」重排；主图换成 **DSH 0.1.6 实拍的「设置 → 压缩与自动续写」页**（编号①–⑥ + 右侧图例），旧的插件页卡片图降级为 ≤0.1.5 存档，`docs/images/README.md` 同步。
+- **v0.8.2** — **文档更正（无代码改动）**：界面是按**生效时机分三组**的，而「在界面里改这些参数」下面的表还停在 v0.7.0 之前的说法 —— 把**阈值与保留比例**写成"新建会话生效"（其实保存时就热同步进运行中的会话了），字段名也和界面上不完全一样。现在分组、字段名与界面逐字对齐。
+- **v0.8.1** — 参数表单回到"设置里自成一页"：新增官方 `settings.section` 槽位注册，**设置 → 「压缩与自动续写」** 与「通用设置 / 模型 / 内置插件 / Agent 预设」同级（0.1.5、0.1.6 都在），不必先钻进插件页找到本包；三处注册共用同一份正文与同一个控制器，各自 `try/catch`，一处失败不影响另外两处。
+- **v0.8.0** — 跟上 DSH 0.1.6 的插件页：老槽位 `settings.plugin.item` 的渲染方被上游删掉，卡片凭空消失且毫无报错；改为同时注册 `plugins.bundle.config`（键 = 包名）与老槽位，并修掉第二处静默失败 —— 只登记 `dsh.profile.bundles`、不在 `dependencies` 里的包会被插件页整条过滤。
+- **v0.7.4** — README 版本徽章与 `package.json` 对齐并纳入校验：市场抓的正是 README，徽章停在旧版本会误导访客。
+- **v0.7.3** — 改预设参数时顺手刷新行尾**带数字**的注释（避免"值 0.02、注释还写着 5%"自相矛盾）；不含数字的注释是用户自己的话，一律保留。
+- **v0.7.2** — 界面文案统一用中文术语「预设」（`token` 保留原样，与 DSH 官方中文界面一致）。
+- **v0.7.1** — 给热同步加**效果校验**：拿策略自己决定的下一次压缩反证引擎是否真的按新阈值判，判定失败就不再自称生效。
+- **v0.7.0** — 阈值与保留比例不必再等新会话：保存后热同步进正在运行的 `compaction-basic` 实例，下一次步边界即生效；`bootstrapMaxTokens` 属于另一个插件，仍只对新会话生效。
+- **v0.6.1** — 压缩提示报出**本会话实际生效的触发线**，并在热同步失败时写明两个值与出路。
+- **v0.6.0** — 压缩触发阈值默认值由 `0.2`（200K）调到 `0.35`（350K），避免还没用上的空间被提前总结掉。
+- **v0.4.0** — 五项参数搬进「设置」界面：新增 settings 命名空间与手写单文件的浏览器 half（零依赖）；前三项写进预设文件，后两项立即生效。
+- **v0.3.0** — 被输出上限截断时自动续写（`maxAutoContinues`），并定位到诱因：压缩后的受控输出预算被思考 token 吃光。
+- **v0.2.0** — 压缩过程不再静默：新增对话区可见的压缩提示（`notice: false` 可关），工具回执补上压缩前后 token 数。
+- **v0.1.0** — 首个版本：`compact_agents` 工具（4 种 scope、忙则排队）、一键安装/卸载/校验脚本、四层验证。
 
 ## License
 
