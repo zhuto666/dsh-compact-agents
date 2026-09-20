@@ -86,7 +86,7 @@ function dshLauncherEntries() {
 }
 
 /**
- * 定位 DSH 检出，**不依赖任何本机盘符**。
+ * 定位 DSH 检出，**不依赖任何硬编码盘符或用户目录**。
  *
  * 依次尝试：显式参数 → 本项目 `node_modules` 里既有的联接目标 → PATH 上的 `dsh`
  * 启动器(全新克隆时唯一有效的一招) → 各 profile 的 `node_modules` → 家目录下的

@@ -112,7 +112,7 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 
 **凡是要写盘的测试，夹具必须显式指向临时文件。** 用 `setPresetFilesForTest([...])`(`settings.js`)把 preset 读写改成临时夹具 —— `compose-test.mjs` 会走真实的 `update → watch → 写回` 链路，第一版漏了这一步，**真的把用户 preset 的 `thresholdRatio` 改写成了 0.42**。
 
-所以 `compose-test.mjs` 开头拍下真实 preset 的**全文快照**、结尾逐字节比对(见该文件顶部 `realPresets`)。判据是"一个字都没动"，**不是**硬编码某个取值 —— `thresholdRatio` 是用户可调旋钮(本机四份 preset 都是 `0.5`)，拿 `0.2` 当期望值会把「用户调过参」误报成「测试污染了配置」，让这条防线恒失败。
+所以 `compose-test.mjs` 开头拍下真实 preset 的**全文快照**、结尾逐字节比对(见该文件顶部 `realPresets`)。判据是"一个字都没动"，**不是**硬编码某个取值 —— `thresholdRatio` 是用户可调旋钮(preset 里的值由用户自定)，拿 `0.2` 当期望值会把「用户调过参」误报成「测试污染了配置」，让这条防线恒失败。
 
 `integration-test.mjs` 用四个最小桩服务(`systemPrompt` / `compaction` / `tokenMeter` / `agents`)代替整个 Harness，**零模型调用**，可随时跑；它覆盖假 ctx 测不到的东西(注册表接受、`executionMode` 实测、output schema、`render()` 产物、越权被拒、提示与自动续写的端到端行为)。断言全集见 `docs/design.md` §4。
 

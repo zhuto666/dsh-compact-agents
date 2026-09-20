@@ -8,5 +8,5 @@ node_modules/
 .testlab/
 .DS_Store
 
-# 编辑器产物（可能含本机路径）。
+# 编辑器产物（可能含本地路径）。
 .idea/

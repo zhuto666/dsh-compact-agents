@@ -237,7 +237,7 @@ ctx.on('agent/request', async (payload, next) => {
 
 ### 7.3 两层处置
 
-1. **根因侧（配置）**：把该 preset 的 `bootstrapMaxTokens` 调到能容纳"思考 + 正文"的量级（本机调到 16384：覆盖实测最大思考 8574 后仍留约 7800 token 正文，且远低于适配器默认 256000）。受控阶段的其它机制（裁剪工具面、最小提示、延迟注入）不受影响。
+1. **根因侧（配置）**：把该 preset 的 `bootstrapMaxTokens` 调到能容纳"思考 + 正文"的量级（调到 16384：覆盖实测最大思考 8574 后仍留约 7800 token 正文，且远低于适配器默认 256000）。受控阶段的其它机制（裁剪工具面、最小提示、延迟注入）不受影响。
 2. **兜底侧（本插件）**：`turn/end{reason: 'max-tokens'}` 时自动续写一次。
 
 ### 7.4 自动续写的实现要点
@@ -378,7 +378,7 @@ preset 里的行由 `agent-presets` 用 `internal.import` **手动挂载**（见
 > 现在它在最前面调用 `setPresetFilesForTest([临时夹具])`，开头还会拍下真实 preset 的**全文快照**、结尾逐字节比对：
 > 只要有一个字被改动就立即失败（`npm test` 会跑到它，也可以单独 `node scripts/compose-test.mjs`）。
 > 判据刻意**不是**"阈值必须是某个数字" —— `thresholdRatio` 本来就是给人调的旋钮，硬编码期望值会把
-> 「用户调过参」（本机四份 preset 都是 `0.5`）误报成「测试污染了配置」，让这条防线恒失败。
+> 「用户调过参」（preset 里的值由用户自定）误报成「测试污染了配置」，让这条防线恒失败。
 > 凡是要写盘的测试，夹具必须显式指向临时文件，不能依赖"我以为它不会写"。
 
 ### 8.5 插件配置界面的宿主换了：老槽位没有渲染方（v0.8.0）
@@ -534,7 +534,7 @@ root wins a duplicate id: a shipped preset shadows any directory that claimed it
   `plugins` 15（`packages/client/ui-settings-plugins/src/client/index.ts:187`）、
   `agent-presets` 20（`packages/client/ui-agent-preset/src/client/index.ts:215`）、
   `archived-sessions` 25（`packages/client/ui-settings-unarchive-sessions/src/client/index.ts:41`）。
-  本机已装的站外插件同样登记在它上面：`dsh-cost-meter` 的「费用」order 30（`.../dsh-cost-meter/lib/client.js`）、
+  已装的其它站外插件同样登记在它上面：`dsh-cost-meter` 的「费用」order 30（`.../dsh-cost-meter/lib/client.js`）、
   `dshmarket` 的「插件市场」order 40（`.../dshmarket/client/client.js`）—— 这两个包在 profile 的
   `node_modules` 里、不在检出里，故只给 profile 相对路径，复查时按包名 grep 即可。
 - **与宿主版本无关**：0.1.5 与 0.1.6 都声明并渲染 `settings.section`。§8.5 的两处是"谁有宿主谁渲染"，
@@ -644,7 +644,7 @@ flowchart TD
 隐含假设（模型不推理）在 `reasoningEffort: high` 下失效——压缩阈值调到 0.2、压缩真的开始发生之后才暴露。
 实测同一会话 761 次带思考的请求：思考 token 中位 371、75 分位 962、90 分位 1826、95 分位 2455、最大 8574，
 其中 **23% ≥ 1024**；而 preset 把 `bootstrapMaxTokens` 给了 1024，于是这个窗口经常整份被思考吃光
-（本机 4/4 次截断都是 `outputTokens=1024, reasoningTokens=1024`、正文 0 字，见 §7）。插件的兜底是
+（实测 4/4 次截断都是 `outputTokens=1024, reasoningTokens=1024`、正文 0 字，见 §7）。插件的兜底是
 "被截断时自动续写"（§7.4），代价是现象变成**锯齿状输出**（说一半 → 自动继续 → 接着说）。
 
 | 调整 | 代价 |
