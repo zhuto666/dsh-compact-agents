@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内**所有活会话**（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · **压缩过程在对话区可见** · **被输出上限截断时自动续写** · 参数在**设置**里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.8.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -235,21 +235,165 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 
 ## 更新历史
 
-- **v0.8.3** — **文档与配图重做（无代码改动）**：README 从 583 行压到 255 行，按「装 → 用 → 排错 → 深入」重排；主图换成 **DSH 0.1.6 实拍的「设置 → 压缩与自动续写」页**（编号①–⑥ + 右侧图例），旧的插件页卡片图降级为 ≤0.1.5 存档，`docs/images/README.md` 同步。
-- **v0.8.2** — **文档更正（无代码改动）**：界面是按**生效时机分三组**的，而「在界面里改这些参数」下面的表还停在 v0.7.0 之前的说法 —— 把**阈值与保留比例**写成"新建会话生效"（其实保存时就热同步进运行中的会话了），字段名也和界面上不完全一样。现在分组、字段名与界面逐字对齐。
-- **v0.8.1** — 参数表单回到"设置里自成一页"：新增官方 `settings.section` 槽位注册，**设置 → 「压缩与自动续写」** 与「通用设置 / 模型 / 内置插件 / Agent 预设」同级（0.1.5、0.1.6 都在），不必先钻进插件页找到本包；三处注册共用同一份正文与同一个控制器，各自 `try/catch`，一处失败不影响另外两处。
-- **v0.8.0** — 跟上 DSH 0.1.6 的插件页：老槽位 `settings.plugin.item` 的渲染方被上游删掉，卡片凭空消失且毫无报错；改为同时注册 `plugins.bundle.config`（键 = 包名）与老槽位，并修掉第二处静默失败 —— 只登记 `dsh.profile.bundles`、不在 `dependencies` 里的包会被插件页整条过滤。
-- **v0.7.4** — README 版本徽章与 `package.json` 对齐并纳入校验：市场抓的正是 README，徽章停在旧版本会误导访客。
-- **v0.7.3** — 改预设参数时顺手刷新行尾**带数字**的注释（避免"值 0.02、注释还写着 5%"自相矛盾）；不含数字的注释是用户自己的话，一律保留。
-- **v0.7.2** — 界面文案统一用中文术语「预设」（`token` 保留原样，与 DSH 官方中文界面一致）。
-- **v0.7.1** — 给热同步加**效果校验**：拿策略自己决定的下一次压缩反证引擎是否真的按新阈值判，判定失败就不再自称生效。
-- **v0.7.0** — 阈值与保留比例不必再等新会话：保存后热同步进正在运行的 `compaction-basic` 实例，下一次步边界即生效；`bootstrapMaxTokens` 属于另一个插件，仍只对新会话生效。
-- **v0.6.1** — 压缩提示报出**本会话实际生效的触发线**，并在热同步失败时写明两个值与出路。
-- **v0.6.0** — 压缩触发阈值默认值由 `0.2`（200K）调到 `0.35`（350K），避免还没用上的空间被提前总结掉。
-- **v0.4.0** — 五项参数搬进「设置」界面：新增 settings 命名空间与手写单文件的浏览器 half（零依赖）；前三项写进预设文件，后两项立即生效。
-- **v0.3.0** — 被输出上限截断时自动续写（`maxAutoContinues`），并定位到诱因：压缩后的受控输出预算被思考 token 吃光。
-- **v0.2.0** — 压缩过程不再静默：新增对话区可见的压缩提示（`notice: false` 可关），工具回执补上压缩前后 token 数。
-- **v0.1.0** — 首个版本：`compact_agents` 工具（4 种 scope、忙则排队）、一键安装/卸载/校验脚本、四层验证。
+版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。条目只记**对使用者可见**的变化，按 `新增` / `变更` / `修复` / `文档` 分类。
+
+### 0.8.4 — 2026-09-20
+
+**文档**（无代码改动）
+
+- 「更新历史」重写为「版本 + 日期 + 变更类型」的结构化列表，补齐 0.5.x 系列与逐版本提交链接，删除叙述性文字，只保留对使用者可见的变化。
+
+### [0.8.3](https://github.com/zhuto666/dsh-compact-agents/commit/a4ce296) — 2026-09-20
+
+**文档**（无代码改动）
+
+- 重写 `README.md` 与 `README.en.md`（583 / 617 行 → 各 255 行），章节按「安装 → 使用 → 排错 → 设计说明」重组，删除与 `docs/design.md` 重复的机制叙述。
+- 主截图更换为 DSH `0.1.6-alpha.2` 实拍的「设置 → 压缩与自动续写」页：`docs/images/settings-section-annotated.png`（①–⑥ 标注 + 右侧图例）与未标注原图 `docs/images/settings-section.png`；DSH ≤ 0.1.5 的插件页卡片图转为存档，不再作为主图引用。
+- `docs/images/README.md` 同步：收录表、标注约定与截图来源/做法。
+- `package.json` 的 `dshhub.summary` 改为「表单自成一页：设置 → 「压缩与自动续写」」，与 v0.8.1 之后的实际入口一致。
+
+### [0.8.2](https://github.com/zhuto666/dsh-compact-agents/commit/7935293) — 2026-09-18
+
+**修复**（文档，无代码改动）
+
+- 参数分组更正为界面上的三组：`压缩触发阈值比例`、`压缩后保留比例` 由「新建会话生效」改为「写入预设并热同步」（v0.7.0 起保存即热同步进运行中的会话）。
+- 文档字段名与界面标签逐字对齐：`压缩进度提示` → `压缩提示播报`，`自动续写次数` → `自动续写次数上限`。
+
+### [0.8.1](https://github.com/zhuto666/dsh-compact-agents/commit/5f91f64) — 2026-09-18
+
+**新增**
+
+- 注册官方 `settings.section` 槽位：设置侧栏新增「压缩与自动续写」一页，与「通用设置 / 模型 / 内置插件 / Agent 预设」同级（DSH 0.1.5 与 0.1.6 均可用）。
+
+**变更**
+
+- 参数表单由三处注册（设置分区、插件页详情、≤0.1.5 折叠卡片）共用同一份正文与同一个控制器，各自独立容错：单处注册失败不影响其余入口。
+
+### [0.8.0](https://github.com/zhuto666/dsh-compact-agents/commit/53e7837) — 2026-09-18
+
+**修复**
+
+- 参数卡片在 DSH 0.1.6 上不显示：老槽位 `settings.plugin.item` 的渲染方已被上游移除，且槽位未声明时 `ctx.slots.inject` 静默不执行。新增注册 `plugins.bundle.config`（键为包名）。
+- 本包在插件页被整条过滤：该页只列 profile `dependencies` 中的包，仅登记 `dsh.profile.bundles` 不够。安装脚本改为同时写入两者。
+
+### [0.7.4](https://github.com/zhuto666/dsh-compact-agents/commit/2a72433) — 2026-09-16
+
+**修复**
+
+- README 版本徽章与 `package.json` 对齐（原停留在 `0.4.0`，而市场收录抓取的正是 README）。
+- 「徽章版本 == `package.json` 版本」纳入 `npm test` 校验。
+
+### [0.7.3](https://github.com/zhuto666/dsh-compact-agents/commit/daa5498) — 2026-09-15
+
+**修复**
+
+- 写入预设参数时同步刷新行尾带数字的注释，避免值与注释（如 `0.02` 与「5%」）自相矛盾；不含数字的注释属于用户自己的话，一律保留。
+
+### [0.7.2](https://github.com/zhuto666/dsh-compact-agents/commit/f07ac81) — 2026-09-15
+
+**变更**
+
+- 界面文案统一为 DSH 官方中文术语「预设」「提示词」（`token` 保留原样）。
+
+### [0.7.1](https://github.com/zhuto666/dsh-compact-agents/commit/dd45ab4) — 2026-09-15
+
+**修复**
+
+- 热同步增加效果校验：以策略自己决定的下一次压缩反证引擎是否采用新阈值，校验不通过时不再报告为已生效。
+
+### [0.7.0](https://github.com/zhuto666/dsh-compact-agents/commit/0f9167c) — 2026-09-15
+
+**新增**
+
+- 阈值与保留比例保存后热同步进运行中的 `compaction-basic` 实例，下一次步边界生效，无需新开会话或重启 `dsh`。
+- `bootstrapMaxTokens` 不受影响：该项由另一个插件读取，仍只对新会话生效。
+
+### [0.6.1](https://github.com/zhuto666/dsh-compact-agents/commit/2e0f0fe) — 2026-09-15
+
+**新增**
+
+- 压缩提示报出**本会话实际生效的触发线**；热同步失败时同时给出预设值与实例值，以及恢复方式。
+
+### [0.6.0](https://github.com/zhuto666/dsh-compact-agents/commit/e70f51e) — 2026-09-15
+
+**变更**
+
+- 压缩触发阈值默认值 `0.2` → `0.35`，避免尚未使用的窗口空间被提前压缩。
+
+**修复**
+
+- 测试守卫由局部比对改为全文快照比对，消除长期存在的误报。
+
+### [0.5.6](https://github.com/zhuto666/dsh-compact-agents/commit/2523d8a) — 2026-09-15
+
+**文档**
+
+- `CLAUDE.md` 补充仓库地图、设置面五个参数的归属与生效机制；移除一条与全局硬约束冲突的约定。
+
+### [0.5.5](https://github.com/zhuto666/dsh-compact-agents/commit/dc52b6c) — 2026-09-15
+
+**文档**
+
+- 加入带标注的设置界面截图。
+
+### [0.5.4](https://github.com/zhuto666/dsh-compact-agents/commit/1bb19ff) — 2026-09-15
+
+**文档**
+
+- 加入压缩链路示意图，并预留界面截图位。
+
+### [0.5.3](https://github.com/zhuto666/dsh-compact-agents/commit/a97f3eb) — 2026-09-15
+
+**文档**
+
+- 逐个说明五个参数各自管什么。
+
+### [0.5.2](https://github.com/zhuto666/dsh-compact-agents/commit/9666200) — 2026-09-15
+
+**变更**
+
+- 设置卡片改用官方插件卡的紧凑样式。
+
+### [0.5.1](https://github.com/zhuto666/dsh-compact-agents/commit/83a823a) — 2026-09-15
+
+**修复**
+
+- 宿主组成里的行名必须为裸包名：带子路径的行名会被静默丢弃。
+
+### [0.5.0](https://github.com/zhuto666/dsh-compact-agents/commit/bd1ceb6) — 2026-09-15
+
+**修复**
+
+- 设置卡片不显示：浏览器 half 必须在宿主组成中注册一行。
+
+### [0.4.0](https://github.com/zhuto666/dsh-compact-agents/commit/61177ac) — 2026-09-15
+
+**新增**
+
+- 五项参数搬进「设置」界面：新增 settings 命名空间与手写单文件的浏览器 half（零依赖）；前三项写入预设文件，后两项立即生效。
+
+**修复**
+
+- 阈值带行内注释时读取失败，且写回会抹掉注释。
+
+### [0.3.0](https://github.com/zhuto666/dsh-compact-agents/commit/5b457af) — 2026-09-15
+
+**新增**
+
+- 一轮以 `turn/end{reason: 'max-tokens'}` 结束时，以用户身份自动续写；次数上限由 `maxAutoContinues` 控制。
+
+### [0.2.0](https://github.com/zhuto666/dsh-compact-agents/commit/2ef2d3d) — 2026-09-15
+
+**新增**
+
+- 对话区可见的压缩提示：播报遮蔽节点数与估算 token 数（`notice: false` 关闭）。
+- 工具回执补上压缩前后的 token 数。
+
+### [0.1.0](https://github.com/zhuto666/dsh-compact-agents/commit/d837b68) — 2026-09-15
+
+**新增**
+
+- 首个版本：`compact_agents` 工具（4 种 scope、忙则排队）、一键安装/卸载/校验脚本、四层验证。
 
 ## License
 

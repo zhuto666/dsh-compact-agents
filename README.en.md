@@ -6,7 +6,7 @@
 
 Force compaction ignoring the automatic threshold · Covers **every live session** in the process (main session / ordinary sub-agents / AgentTeams members) · A busy target is queued and compacted the moment its turn ends · Per-target reporting of shadowed node count and estimated tokens · **Compaction is visible in the conversation** · **Auto-continues after an output-cap truncation** · **The parameters are editable on their own page in Settings** · No network, no dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.8.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -235,21 +235,165 @@ Changing the plugin's `.js` (including `client-host.js` / `settings.js`) or anyt
 
 ## Changelog
 
-- **v0.8.3** — **Docs and screenshots redone (no code change)**: README cut from 583 to 255 lines and reordered as install → use → troubleshooting → deeper design; the main image is now the real DSH 0.1.6 `Settings → 压缩与自动续写` page (call-outs ①–⑥ plus a legend), while the old Plugins-page card is demoted to a ≤0.1.5 archive; `docs/images/README.md` updated to match.
-- **v0.8.2** — **documentation correction, no code change**: the form groups its fields by **when they take effect**, while the table under "Editing these parameters in the UI" still described the pre-v0.7.0 behaviour — it listed the **trigger ratio and retained ratio** as "new sessions only" (saving them actually hot-syncs into running sessions), and the field names did not match the UI word for word. Groups and field names now mirror the UI exactly.
-- **v0.8.1** — the parameter form moved back to a page of its own in Settings: a new registration into the official `settings.section` slot puts **Settings → 「压缩与自动续写」** at the same level as `通用设置` / `模型` / `内置插件` / `Agent 预设` (present on 0.1.5 and 0.1.6 alike), with no need to dig into the Plugins page first. All three registrations share one body of markup and one controller, each in its own `try/catch`, so one failing does not affect the other two.
-- **v0.8.0** — keeping up with DSH 0.1.6's Plugins page: upstream deleted the renderer for the old `settings.plugin.item` slot, so our card vanished with no error at all; the form now registers into both `plugins.bundle.config` (keyed by package name) and the old slot, and a second silent failure was fixed — a package listed only in `dsh.profile.bundles` and not in `dependencies` is filtered out of the Plugins page entirely.
-- **v0.7.4** — the README version badge now matches `package.json` and is enforced by validation: the market reads the README, so a stale badge misleads visitors.
-- **v0.7.3** — writing a preset value now also refreshes a **numeric** trailing comment (no more "value 0.02, comment still says 5%"); comments without digits are the user's own prose and are preserved.
-- **v0.7.2** — UI wording is consistently Chinese, using the official term 预设 (the word `token` is kept as-is, matching DSH's own Chinese UI).
-- **v0.7.1** — an **effect check** for hot-syncing: the next policy-driven compaction is used to prove whether the engine really judges by the new ratio; if not, the plugin stops claiming success.
-- **v0.7.0** — the trigger ratio and retained ratio no longer wait for a new conversation: saving hot-syncs them into the running `compaction-basic` instance, effective at the next step boundary; `bootstrapMaxTokens` belongs to another plugin and still applies to new sessions only.
-- **v0.6.1** — the compaction notice reports the **trigger line this session actually runs**, and states both values plus the way out when hot-syncing fails.
-- **v0.6.0** — the default compaction trigger ratio moved from `0.2` (200K) to `0.35` (350K), so space that has not been used yet is no longer summarized early.
-- **v0.4.0** — all five parameters moved into Settings: a new settings namespace plus a hand-written single-file browser half (zero dependencies); the first three values write the preset file, the last two apply immediately.
-- **v0.3.0** — auto-continue after an output-cap truncation (`maxAutoContinues`), and the trigger behind it: the post-compaction controlled output budget being eaten by reasoning tokens.
-- **v0.2.0** — compaction is no longer silent: a visible notice in the conversation (`notice: false` disables it), and before/after token counts on the tool rows.
-- **v0.1.0** — first release: the `compact_agents` tool (four scopes, queue-when-busy), one-shot install/uninstall/validate scripts, four verification layers.
+Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from. Entries list only **user-visible** changes, grouped as `Added` / `Changed` / `Fixed` / `Docs`.
+
+### 0.8.4 — 2026-09-20
+
+**Docs** (no code change)
+
+- Rewrote this changelog as a structured list of version + date + change type, filling in the 0.5.x series and per-version commit links, and dropping narrative prose in favour of user-visible changes only.
+
+### [0.8.3](https://github.com/zhuto666/dsh-compact-agents/commit/a4ce296) — 2026-09-20
+
+**Docs** (no code change)
+
+- Rewrote `README.md` and `README.en.md` (583 / 617 lines → 255 each) around install → use → troubleshooting → design notes, removing mechanism prose that duplicates `docs/design.md`.
+- New main screenshot: the real DSH `0.1.6-alpha.2` `Settings → 压缩与自动续写` page — `docs/images/settings-section-annotated.png` (call-outs ①–⑥ plus a legend) and the unannotated `docs/images/settings-section.png`; the DSH ≤ 0.1.5 Plugins-page card is kept as an archive only.
+- `docs/images/README.md` updated: inventory table, annotation convention and the screenshot source/method.
+- `dshhub.summary` in `package.json` changed to "the form is its own page: Settings → 「压缩与自动续写」", matching the real entry point since v0.8.1.
+
+### [0.8.2](https://github.com/zhuto666/dsh-compact-agents/commit/7935293) — 2026-09-18
+
+**Fixed** (docs only, no code change)
+
+- Parameter grouping corrected to the three groups shown in the UI: `压缩触发阈值比例` and `压缩后保留比例` moved from "takes effect for new sessions" to "written to the preset *and* hot-synced" (true since v0.7.0).
+- Documented field names aligned verbatim with the UI labels: `压缩进度提示` → `压缩提示播报`, `自动续写次数` → `自动续写次数上限`.
+
+### [0.8.1](https://github.com/zhuto666/dsh-compact-agents/commit/5f91f64) — 2026-09-18
+
+**Added**
+
+- Registered the official `settings.section` slot: a new 「压缩与自动续写」 page in the Settings sidebar, at the same level as `通用设置` / `模型` / `内置插件` / `Agent 预设` (works on DSH 0.1.5 and 0.1.6).
+
+**Changed**
+
+- The parameter form is registered in three places (Settings section, Plugins-page detail, ≤0.1.5 collapsible card) and shares one body plus one controller, each guarded separately: a failure in one registration does not affect the others.
+
+### [0.8.0](https://github.com/zhuto666/dsh-compact-agents/commit/53e7837) — 2026-09-18
+
+**Fixed**
+
+- The parameter card was invisible on DSH 0.1.6: upstream removed the renderer for the old `settings.plugin.item` slot, and `ctx.slots.inject` fails silently on an undeclared slot. Added a `plugins.bundle.config` registration (keyed by package name).
+- The package was filtered out of the Plugins page entirely: that page lists only bundles present in the profile `dependencies`, so registering in `dsh.profile.bundles` alone is not enough. The installer now writes both.
+
+### [0.7.4](https://github.com/zhuto666/dsh-compact-agents/commit/2a72433) — 2026-09-16
+
+**Fixed**
+
+- README version badge aligned with `package.json` (it had been stuck at `0.4.0`, and the marketplace scrapes the README).
+- "Badge version == `package.json` version" is now enforced by `npm test`.
+
+### [0.7.3](https://github.com/zhuto666/dsh-compact-agents/commit/daa5498) — 2026-09-15
+
+**Fixed**
+
+- Writing a preset parameter now refreshes trailing numeric comments too, so a value and its comment (e.g. `0.02` next to "5%") cannot contradict each other; comments without numbers are the user's own words and are always left alone.
+
+### [0.7.2](https://github.com/zhuto666/dsh-compact-agents/commit/f07ac81) — 2026-09-15
+
+**Changed**
+
+- UI wording unified on DSH's official Chinese terms 「预设」 and 「提示词」 (`token` and similar are kept as-is).
+
+### [0.7.1](https://github.com/zhuto666/dsh-compact-agents/commit/dd45ab4) — 2026-09-15
+
+**Fixed**
+
+- Hot sync now verifies its effect: it uses the next compaction the policy decides by itself to prove the engine really judges by the new threshold, and stops claiming success when that check fails.
+
+### [0.7.0](https://github.com/zhuto666/dsh-compact-agents/commit/0f9167c) — 2026-09-15
+
+**Added**
+
+- Threshold and retained ratio are hot-synced into running `compaction-basic` instances on save, taking effect at the next step boundary — no new session, no `dsh` restart.
+- `bootstrapMaxTokens` is unaffected: it is read by a different plugin and still applies to new sessions only.
+
+### [0.6.1](https://github.com/zhuto666/dsh-compact-agents/commit/2e0f0fe) — 2026-09-15
+
+**Added**
+
+- The compaction notice reports **the trigger line actually in effect for this session**; when hot sync fails it prints both the preset value and the instance value, plus how to recover.
+
+### [0.6.0](https://github.com/zhuto666/dsh-compact-agents/commit/e70f51e) — 2026-09-15
+
+**Changed**
+
+- Default compaction trigger ratio `0.2` → `0.35`, so unused window space is no longer summarized prematurely.
+
+**Fixed**
+
+- The test guard now compares full snapshots instead of a fragment, removing a long-standing false positive.
+
+### [0.5.6](https://github.com/zhuto666/dsh-compact-agents/commit/2523d8a) — 2026-09-15
+
+**Docs**
+
+- `CLAUDE.md` gained a repository map plus the ownership and effect timing of the five Settings parameters; one convention that conflicted with a global hard rule was removed.
+
+### [0.5.5](https://github.com/zhuto666/dsh-compact-agents/commit/dc52b6c) — 2026-09-15
+
+**Docs**
+
+- Added an annotated screenshot of the Settings UI.
+
+### [0.5.4](https://github.com/zhuto666/dsh-compact-agents/commit/1bb19ff) — 2026-09-15
+
+**Docs**
+
+- Added a compaction-pipeline diagram and reserved a slot for a UI screenshot.
+
+### [0.5.3](https://github.com/zhuto666/dsh-compact-agents/commit/a97f3eb) — 2026-09-15
+
+**Docs**
+
+- Explained what each of the five parameters actually controls.
+
+### [0.5.2](https://github.com/zhuto666/dsh-compact-agents/commit/9666200) — 2026-09-15
+
+**Changed**
+
+- The Settings card now uses the official plugin card's compact style.
+
+### [0.5.1](https://github.com/zhuto666/dsh-compact-agents/commit/83a823a) — 2026-09-15
+
+**Fixed**
+
+- Line names in the host composition must be bare package names: a subpath line name is dropped silently.
+
+### [0.5.0](https://github.com/zhuto666/dsh-compact-agents/commit/bd1ceb6) — 2026-09-15
+
+**Fixed**
+
+- Settings card missing: the browser half must be registered as a row in the host composition.
+
+### [0.4.0](https://github.com/zhuto666/dsh-compact-agents/commit/61177ac) — 2026-09-15
+
+**Added**
+
+- The five parameters moved into the Settings UI: a new settings namespace plus a hand-written single-file browser half (zero dependencies); the first three are written to the preset file, the other two take effect immediately.
+
+**Fixed**
+
+- A threshold with a trailing inline comment could not be read, and writing it back wiped the comment.
+
+### [0.3.0](https://github.com/zhuto666/dsh-compact-agents/commit/5b457af) — 2026-09-15
+
+**Added**
+
+- When a turn ends with `turn/end{reason: 'max-tokens'}`, the plugin continues the conversation as the user; the budget is bounded by `maxAutoContinues`.
+
+### [0.2.0](https://github.com/zhuto666/dsh-compact-agents/commit/2ef2d3d) — 2026-09-15
+
+**Added**
+
+- A compaction notice visible in the conversation, reporting the shadowed node count and estimated tokens (`notice: false` turns it off).
+- Tool receipts now include the token counts before and after compaction.
+
+### [0.1.0](https://github.com/zhuto666/dsh-compact-agents/commit/d837b68) — 2026-09-15
+
+**Added**
+
+- First release: the `compact_agents` tool (4 scopes, busy targets queued), install / uninstall / verify scripts, and four layers of verification.
 
 ## License
 
