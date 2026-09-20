@@ -8,7 +8,7 @@
  *      package.json），探测不到才退回桩；真实 react-dom/server 可用时再真渲染一次；
  *   3. 断言工厂形状、cordis `apply`/`inject`、命名空间绑定、slot 注册键、注入面动作；
  *   4. 断言卡片在"未就绪"与"就绪"两种状态下都能渲染：未就绪只留一句提示；就绪默认收起、
- *      展开后五个字段的中文标签与两组生效时机题注都在、两个枚举字段是下拉框；
+ *      展开后六个字段的中文标签与三组生效时机题注都在、两个枚举字段是下拉框；
  *      并且 save/reset 真的调到了 scope 的 set/unset。
  *
  * 卡片默认收起，而服务端渲染没有点击可点，所以展开态由 `renderOpen()` 打开组件接受的
@@ -214,7 +214,7 @@ check('bundle requires the ui-primitives seed module for Tag + chevron',
 // ---------------------------------------------------------------------------
 // 3. 桩 ctx：真跑 apply，看它绑了哪个命名空间、往哪个 slot 注册了什么。
 // ---------------------------------------------------------------------------
-const SECTION = { notice: true, maxAutoContinues: 2, thresholdRatio: 0.2, retainRatio: 0.05, bootstrapMaxTokens: 4096 }
+const SECTION = { notice: true, maxAutoContinues: 2, preemptiveRatio: 0.9, thresholdRatio: 0.2, retainRatio: 0.05, bootstrapMaxTokens: 4096 }
 
 /** 一个真会记账的 settings scope 桩：set/unset 会改自己的 user 层并通知订阅者。 */
 function createScopeStub(section) {
@@ -467,9 +467,9 @@ try {
   check('component renders with empty props (no crash, says 设置尚未就绪)', false, String(error))
 }
 
-// 4c. 就绪：默认只渲染折叠的头部；展开后五个字段、时机分组、保存/放弃都在。
+// 4c. 就绪：默认只渲染折叠的头部；展开后六个字段、时机分组、保存/放弃都在。
 scope.setStatus('ready')
-const LABELS = ['压缩提示播报', '自动续写次数上限', '压缩触发阈值比例', '压缩后保留比例', '受控阶段输出预算']
+const LABELS = ['压缩提示播报', '自动续写次数上限', '回合结束预压比例', '压缩触发阈值比例', '压缩后保留比例', '受控阶段输出预算']
 const collapsed = render(faceView(face))
 const collapsedText = textOf(collapsed)
 check('ready card starts collapsed: header only, no field rows',
@@ -478,7 +478,7 @@ check('ready card starts collapsed: header only, no field rows',
 const ready = renderOpen(face)
 const readyText = textOf(ready)
 const missing = LABELS.filter(label => !readyText.includes(label))
-check('expanded card shows all five field labels', missing.length === 0, `missing: ${missing.join(', ')}`)
+check('expanded card shows all six field labels', missing.length === 0, `missing: ${missing.join(', ')}`)
 check('expanded card groups the fields by when they take effect (one caption per group)',
   (readyText.match(/立即生效/g) ?? []).length === 1
   && (readyText.match(/写入预设并热同步/g) ?? []).length === 1
@@ -633,7 +633,7 @@ const panelText = rendered => textOf(rendered)
 const panelMarkupOrClasses = rendered => rendered.markup ?? collectClasses(rendered.element).join(' ')
 
 const panelReady = renderPanel({ ...faceView(panelFace), view: 'page' })
-check('插件页表单：五个字段、两组时机题注与保存/放弃都在',
+check('插件页表单：六个字段、三组时机题注与保存/放弃都在',
   LABELS.every(label => panelText(panelReady).includes(label))
   && panelText(panelReady).includes('保存') && panelText(panelReady).includes('放弃修改'),
   panelText(panelReady).replace(/\s+/g, ' ').slice(0, 160))
@@ -683,7 +683,7 @@ function renderSection(props) {
 }
 
 const sectionReady = renderSection({ ...faceView(sectionFace) })
-check('设置分区：标题 + 引言 + 五个字段 + 保存都在',
+check('设置分区：标题 + 引言 + 六个字段 + 保存都在',
   textOf(sectionReady).includes('压缩与自动续写')
   && textOf(sectionReady).includes('压缩触发阈值比例')
   && textOf(sectionReady).includes('自动续写次数')

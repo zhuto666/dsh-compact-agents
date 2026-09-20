@@ -4,9 +4,9 @@
 
 **A forced session-context compaction plugin for DeepSeek Harness: a model-callable `compact_agents` tool plus a parameter form inside Settings**
 
-Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
+Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.8.4-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.8.5-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -132,6 +132,24 @@ When a turn ends with `turn/end{reason: 'max-tokens'}`, the plugin sends "contin
 
 The budget is `maxAutoContinues` (default 2; `0` / `false` disables it); once it is exhausted the plugin posts a notice instead of continuing, so it cannot burn tokens forever. Any normally finished turn resets the budget, so it counts consecutive continuations. Why it exists: after compaction a preset often shrinks the output budget of the next request, and with high reasoning enabled the thinking tokens share that budget and can consume all of it → zero text and a truncated turn ([design notes §7](docs/design.md)).
 
+### No more waiting at the start of a reply: pre-compaction at turn end
+
+DSH decides on automatic compaction **before every model request** (`agent/pre-step`): once usage reaches the trigger line, the summarizer has to finish **before the first token** of that request. That decision point sits **after your new message has already entered the session**, so the most common case — the previous turn ended just short of the line and your new message pushes it over — shows up as **a reply that sits there with nothing coming out** for a few to a few dozen seconds.
+
+This plugin moves the decision point one turn earlier: **if usage at the end of a turn already reaches 90% of the trigger line** (the new `preemptiveRatio`), it compacts right then. The summarizing cost then falls into the gap where the answer has already been delivered and you are reading it, and the next turn starts immediately. The line-crossing fallback still belongs to DSH itself, and pre-compaction failing to fire or failing to shrink anything never affects correctness. The conversation marks such a compaction as pre-emptive:
+
+```
+▸ 上下文注入 · dsh-compact-agents · 正在压缩上下文…（当前 190,000 tokens） · 回合结束预压
+```
+
+Three honest caveats:
+
+- **The latency is moved, not removed**: ask a follow-up immediately and you still wait — for the tail of the previous turn rather than the head of this one.
+- **It covers only half the cases**: if your own new message is what crosses the line (the previous turn ended far below it and you pasted something long), pre-compaction was not in band at the time and the reply still opens with a wait. Predicting a message you have not sent is not possible.
+- **It can cost one extra summarizer call**: it acts at 0.9, i.e. hugging the line, so only sessions that are already nearly full compact early. Sessions that cannot be compacted (`noop`, e.g. a single oversized retained unit) back off instead of retrying every turn.
+
+To turn it off, set `回合结束预压比例` to `0` in Settings, or use the row option `preemptiveRatio: 0`. Mechanism and trade-offs: [design notes §10](docs/design.md).
+
 ### Changing these parameters from the UI
 
 The primary entry point is its own page in Settings: open **Settings** → sidebar **「压缩与自动续写」**, which sits at the same level as 「通用设置 / 模型 / 内置插件 / Agent 预设」 (present in DSH 0.1.5 and 0.1.6). The other two places share the same form and the same controller: the detail page of this package on the Plugins page (DSH ≥ 0.1.6), and the **Settings → Plugins → Configurable** collapsible card (DSH ≤ 0.1.5).
@@ -150,6 +168,7 @@ Field names and effect timing — the UI groups them by when they take effect, a
 |---|---|---|
 | `压缩提示播报` | whether to report the shadowed node count and estimated tokens in the conversation after compaction; on by default | dropdown `开启` / `关闭` |
 | `自动续写次数上限` | maximum number of auto-continues when a reply is cut off by the output limit; 0 disables it, default 2 | dropdown `0` `1` `2` `3` `5` `10` |
+| `回合结束预压比例` | share of the trigger line that, once reached at the end of a turn, compacts right away and moves the summarizing cost into the gap after the answer; 0 disables it, default 0.9 | a number 0 – 1 (0.8 – 0.95 recommended) |
 
 **Written to the preset and hot-synced · written into the preset config and hot-synced into running sessions, taking effect at the next step boundary.**
 
@@ -174,8 +193,9 @@ Tuning cheat sheet (mechanism and trade-offs: [design notes §9](docs/design.md)
 | Fewer interruptions, keep what was just said | raise the retained ratio (`0.08~0.1`) |
 | The controlled phase keeps getting cut off (repeated auto-continues) | raise the output budget (`32768`) |
 | Compaction happens too often / too much summarizing | raise the threshold (`0.3~0.4`) |
+| Replies keep opening with a wait for compaction | leave pre-compaction on and lower the ratio (`0.8`, i.e. act earlier; `0` disables it) |
 
-> Row options `notice: false` / `maxAutoContinues: 0` / `livePresetParams: false` disable the notice, auto-continue and hot sync respectively; `settings: false` turns the whole Settings surface off (the tool and the notice are unaffected).
+> Row options `notice: false` / `maxAutoContinues: 0` / `preemptiveRatio: 0` / `livePresetParams: false` disable the notice, auto-continue, pre-compaction and hot sync respectively; `settings: false` turns the whole Settings surface off (the tool and the notice are unaffected).
 
 ## Troubleshooting
 
@@ -242,6 +262,7 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 - **Alive sessions only**: finished or archived sessions have no Agent handle, and compacting them afterwards saves no tokens.
 - **Compaction is not free**: each target really calls the summarizer model once, which costs tokens.
 - **A single oversized retained unit cannot be fixed**: the contract is explicit that surface compaction cannot help there; the target reports `noop`.
+- **End-of-turn pre-compaction covers only half the cases**: if your own new message is what crosses the line (the previous turn ended far below it and you pasted something long), pre-compaction was not in band at the time, so the reply still waits once for the summarizer — the decision point cannot run before that message exists.
 - **`scope: "self"` is asynchronous**: the tool returns `queued` immediately, the actual compaction happens after the current turn ends, and the result goes to the DSH log rather than the tool result.
 - **Already-composed sessions do not get the new tool**: a preset change only affects new sessions; older sessions need a new conversation (a restart drops member sessions).
 - **No orphan-data / state cleanup**: the plugin is stateless (zero persistence, zero network, does not change the automatic compaction policy).
@@ -252,6 +273,17 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.8.5 — 2026-09-20
+
+**Added**
+
+- End-of-turn pre-compaction: if usage at the end of a turn already reaches 90% of the trigger line, it compacts right away, moving the summarizer cost from the head of the next turn into the tail of the current one (the gap after the answer was delivered). The new `回合结束预压比例` parameter appears on all three Settings surfaces, and the row option of the same name works too; `0` disables it, default `0.9`.
+- A compaction fired by pre-compaction is marked 「回合结束预压」 in the conversation, so it is distinguishable from a line-crossing one.
+
+**Changed**
+
+- Sessions that cannot be compacted (`noop`, e.g. a single oversized retained unit) now back off: they are not retried every turn unless usage grows by more than 5%.
 
 ### [0.8.1](https://github.com/zhuto666/dsh-compact-agents/commit/5f91f64) — 2026-09-18
 

@@ -34,7 +34,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { currentPresetThreshold, currentPresetValues, liveConfig, onPresetParamsChanged, registerSettings, resolveMaxAutoContinues } from './settings.js'
+import { currentPresetThreshold, currentPresetValues, liveConfig, onPresetParamsChanged, registerSettings, resolveMaxAutoContinues, resolvePreemptiveRatio } from './settings.js'
 
 export const name = 'dsh-compact-agents'
 export const inject = ['tools', 'compaction', 'agents']
@@ -103,6 +103,24 @@ const patchFailed = new WeakMap()
  */
 const selfCompactions = new Map()
 
+/**
+ * 上一次"回合结束预压"压不动（返回 `noop`）时的占用：`会话 id -> tokens`。
+ *
+ * 为什么不退避就会白花钱：`noop` 的典型成因是"单个超大保留单元"（契约上表面压缩修不了），
+ * 这种会话的占用会一直贴在触发线附近，于是**每一轮结束都会再试一次**、每次都白调一遍
+ * 摘要模型。占用没实质增长就不再试，是这条路径唯一必要的记账。
+ */
+const preemptiveNoop = new Map()
+
+/** 下一次压缩是"回合结束预压"发起的：`会话 id -> 标记时刻`（提示据此说明来历）。 */
+const preemptiveMarks = new Map()
+
+/** 退避幅度：占用没涨过这个比例，就不再重复预压。 */
+const PREEMPTIVE_RETRY_GROWTH = 0.05
+
+/** 预压标记的有效期；压缩事件紧接着就得来，给足冗余即可。 */
+const PREEMPTIVE_MARK_TTL_MS = 10 * 60 * 1000
+
 /** 把接下来这段时间内该会话的压缩标记为"我们自己要求的"。 */
 function markSelfCompaction(agent) {
   const id = agent?.session?.id ?? agent?.id
@@ -116,6 +134,32 @@ function markSelfCompaction(agent) {
 export function resetHotSyncStateForTest() {
   selfCompactions.clear()
   contextWindows.clear()
+}
+
+/** 仅供测试：清掉回合结束预压的记账（noop 退避、来历标记）。 */
+export function resetPreemptiveStateForTest() {
+  preemptiveNoop.clear()
+  preemptiveMarks.clear()
+}
+
+/** 把接下来的这次压缩标记为"回合结束预压"发起的。 */
+function markPreemptive(session) {
+  const id = session?.id
+  if (id !== undefined && id !== null) preemptiveMarks.set(String(id), Date.now())
+}
+
+/**
+ * 取出并消费"这次压缩是预压"的标记；过期或没有标记时返回 false。
+ * @param session - 事件所属会话。
+ * @returns 是否为预压发起的压缩。
+ */
+function consumePreemptiveMark(session) {
+  const id = session?.id
+  if (id === undefined || id === null) return false
+  const at = preemptiveMarks.get(String(id))
+  if (at === undefined) return false
+  preemptiveMarks.delete(String(id))
+  return Date.now() - at < PREEMPTIVE_MARK_TTL_MS
 }
 
 /**
@@ -438,6 +482,42 @@ function staleLine(state) {
 }
 
 /**
+ * 本会话这一代际**实际生效**的压缩触发线（token 数）。
+ *
+ * 与 {@link thresholdState} 同源：命中 `modelPolicies` 的那条优先，被 {@link verifyPatch}
+ * 反证出引擎没吃新值时以引擎实际在用的那个值为准 —— 预压要贴着引擎真正会判的那条线，
+ * 否则"提前"就成了"守着一条没人用的线"。
+ *
+ * 窗口是异步查来的（{@link resolveWindow}），当次查不到就返回 null 并顺手补一次查询，
+ * 下一次回合结束即可用上；查不到只是少一次优化，不影响达线兜底。
+ *
+ * @param ctx - registrant context carrying the compaction service.
+ * @param session - 要判定的会话。
+ * @returns 触发线（token 数）；读不到时为 null。
+ */
+function effectiveLine(ctx, session) {
+  try {
+    const target = routedTargetOf(session)
+    if (target === null) return null
+    const config = ctx.compaction?.config
+    if (config === null || typeof config !== 'object') return null
+    const override = matchingPolicy(config, target)
+    const ratio = patchFailed.get(ctx) ?? override?.thresholdRatio ?? config.thresholdRatio
+    if (typeof ratio !== 'number' || !(ratio > 0)) return null
+    const key = `${target.provider}/${target.model}`
+    const window = contextWindows.get(key)
+    if (typeof window !== 'number' || !(window > 0)) {
+      // 窗口是异步查来的（查不到也会缓存 null，重复调用是空操作）：这次用不上就补一次。
+      resolveWindow(ctx, target)
+      return null
+    }
+    return window * ratio
+  } catch {
+    return null
+  }
+}
+
+/**
  * 把一次压缩事件翻译成对话里的提示。
  * @param ctx - registrant context carrying the token meter and logger.
  * @param session - 事件所属会话。
@@ -449,12 +529,17 @@ function noticeFor(ctx, session, event) {
     const before = measureTokens(ctx, session)
     inFlight.set(id, { before })
     const threshold = thresholdState(ctx, session)
+    // 消费标记：这次压缩是不是"回合结束预压"发起的（提示里要说明来历，别让人以为达线了）。
+    const preemptive = consumePreemptiveMark(session)
     appendNotice(
       ctx,
       session,
       (before === null ? '正在压缩上下文…' : `正在压缩上下文…（当前 ${group(before)} tokens）`)
+      + (preemptive ? ' · 回合结束预压' : '')
       + thresholdSuffix(threshold),
-      '⏳ 上下文已达压缩阈值，正在压缩上下文。\n'
+      (preemptive
+        ? '⏳ 上一轮回答结束时上下文已接近触发线，正在提前压缩，好让下一轮直接开跑。\n'
+        : '⏳ 上下文已达压缩阈值，正在压缩上下文。\n')
       + (before === null ? '' : `当前约 ${group(before)} tokens。\n`)
       + staleLine(threshold)
       + '这是一条状态提示，不需要回应。',
@@ -627,12 +712,16 @@ function registerSessionWatch(ctx, mount) {
       }
       const notice = liveConfig.notice ?? mount.notice
       const maxAutoContinues = liveConfig.maxAutoContinues ?? mount.maxAutoContinues
+      const preemptiveRatio = liveConfig.preemptiveRatio ?? mount.preemptiveRatio
       if (notice
         && (type === 'compaction/start' || type === 'compaction/summary' || type === 'compaction/end')) {
         noticeFor(ctx, session, event)
       }
-      if (maxAutoContinues > 0 && type === 'turn/end') {
-        continueFor(ctx, session, event, maxAutoContinues, notice)
+      if (type === 'turn/end') {
+        // 顺序：先排预压（把摘要挪到本轮之后），再决定要不要自动续写。
+        // 预压只是"排队"，真正的压缩等 agent 真的 idle 了才跑。
+        if (preemptiveRatio > 0) schedulePreemptive(ctx, session, preemptiveRatio)
+        if (maxAutoContinues > 0) continueFor(ctx, session, event, maxAutoContinues, notice)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -701,12 +790,20 @@ function assertMaySweep(ctx, caller, scope) {
  * Registered on the plugin's own context, so the listener dies with the plugin.
  * @param ctx - registrant context carrying the agent registry and logger.
  * @param agent - the busy agent to compact later.
+ * @param options - optional bookkeeping hooks.
+ * @param options.reason - log label; `'deferred'` for a tool-driven queue (the default),
+ *   `'preemptive'` for the end-of-turn pre-compaction.
+ * @param options.after - called with the result and whether the call threw
+ *   (`result === null` means nothing was safely compactable). The pre-compaction path
+ *   uses it to back off after a `noop`; a call that *threw* says nothing about the
+ *   context shape, so it must not be mistaken for one.
  * @returns true when this call queued it, false when one was already queued.
  */
-function scheduleWhenIdle(ctx, agent) {
+function scheduleWhenIdle(ctx, agent, options = {}) {
   const id = String(agent.id)
   if (scheduled.has(id)) return false
   scheduled.add(id)
+  const reason = typeof options.reason === 'string' ? options.reason : 'deferred'
   let fired = false
   const stop = ctx.on('agent/status', ({ agent: subject, status }) => {
     if (fired || status !== 'idle' || String(subject.id) !== id) return
@@ -714,21 +811,83 @@ function scheduleWhenIdle(ctx, agent) {
     stop()
     scheduled.delete(id)
     void (async () => {
+      let result = null
+      let failed = false
       try {
         // 这是我们自己要求的压缩：它的 token 数不代表策略阈值，别拿它反证热同步。
         markSelfCompaction(agent)
-        const result = await ctx.compaction.compactNow(agent, new AbortController().signal)
+        result = await ctx.compaction.compactNow(agent, new AbortController().signal)
         ctx.logger.info(result === null
-          ? `compact-agents: deferred compaction of ${id} found nothing safely compactable`
-          : `compact-agents: deferred compaction of ${id} shadowed `
+          ? `compact-agents: ${reason} compaction of ${id} found nothing safely compactable`
+          : `compact-agents: ${reason} compaction of ${id} shadowed `
             + `${result.shadowedSeqs.length} nodes (~${result.shadowedTokenCount} tokens)`)
       } catch (error) {
+        failed = true
         const message = error instanceof Error ? error.message : String(error)
-        ctx.logger.warn(`compact-agents: deferred compaction of ${id} failed: ${message}`)
+        ctx.logger.warn(`compact-agents: ${reason} compaction of ${id} failed: ${message}`)
+      } finally {
+        if (typeof options.after === 'function') {
+          try {
+            options.after(result, failed)
+          } catch {
+            // 记账失败不该影响一次已经完成的压缩。
+          }
+        }
       }
     })()
   })
   return true
+}
+
+/**
+ * 一轮结束时判定"快到触发线了"，是就把这次压缩提前做掉。
+ *
+ * 为什么需要它：`compaction-basic` 的达线判定挂在 `agent/pre-step`，也就是**每个模型请求
+ * 之前**（`packages/compaction/compaction-basic/src/index.ts`），包含新一轮的第一个请求 ——
+ * 而那时用户的新消息已经进会话了。于是最常见的那种情况（上一轮结束时差一点、新消息一进来
+ * 就跨线）会让摘要模型跑在**第一个 token 之前**，表现成"开头卡顿、等半天才出字"。
+ *
+ * 这里把判定点前移一个回合：达线兜底仍归引擎，我们只负责把"即将达线"的那一次挪进"回答已
+ * 交付、用户正在读"的空档里。代价与边界：
+ *
+ * - 只搬不消灭 —— 用户若立刻追问，等待照样发生（只是等的东西不同）；
+ * - 会为"聊到线附近就收工"的会话多付一次摘要调用，所以判定带要贴着线（默认 0.9），
+ *   而不是"每轮结束都压一遍"；
+ * - 压不动（`noop`，例如单个超大保留单元）的会话要退避，否则每轮白试一次；
+ * - 预压**不能**覆盖"跨线是用户新消息自己造成的"那一半（那时还不在带内）。
+ *
+ * 真正的压缩交给 {@link scheduleWhenIdle}：此刻 agent 还在收尾，等它真的 idle 了再动手，
+ * 绝不与进行中的回合抢（`compactNow` 走 `agent.runMaintenance`，忙时会抛）。
+ *
+ * @param ctx - registrant context carrying the compaction service and logger.
+ * @param session - 刚结束一轮的会话。
+ * @param ratio - 预压比例（触发线的占比）；调用处已排除 0。
+ */
+function schedulePreemptive(ctx, session, ratio) {
+  const agent = agentForSession(ctx, session)
+  if (agent === null) return
+  const line = effectiveLine(ctx, session)
+  if (line === null) return
+  const tokens = measureTokens(ctx, session)
+  if (tokens === null || tokens < line * ratio) return
+  const id = String(agent.id)
+  const last = preemptiveNoop.get(id)
+  if (typeof last === 'number' && tokens < last * (1 + PREEMPTIVE_RETRY_GROWTH)) return
+  const queued = scheduleWhenIdle(ctx, agent, {
+    reason: 'preemptive',
+    after: (result, failed) => {
+      // 只有"真的压不动"才退避；因为忙或报错而没跑成的，下一轮还要再试。
+      if (failed) return
+      if (result === null) preemptiveNoop.set(id, tokens)
+      else preemptiveNoop.delete(id)
+    },
+  })
+  if (!queued) return
+  markPreemptive(session)
+  ctx.logger.info(
+    `compact-agents: ${id} 一轮结束时已贴近触发线（约 ${group(tokens)} / ${group(Math.round(line))} tokens，`
+    + `带 ${ratio}），已排队提前压缩`,
+  )
 }
 
 /**
@@ -860,7 +1019,9 @@ function render(value) {
  * @param ctx - registrant context carrying the tool, compaction, session feed, settings, and agent services.
  * @param config - optional row config; `notice: false` turns the notices off,
  *   `maxAutoContinues` (default 2, `0`/`false` off) bounds the automatic "继续" turns,
- *   `settings: false` turns the Settings namespace off. Both knobs are the composition
+ *   `preemptiveRatio` (default 0.9, `0`/`false` off) pre-compacts at the end of a turn
+ *   once occupancy reaches that share of the trigger line,
+ *   `settings: false` turns the Settings namespace off. All three knobs are the composition
  *   layer, so the Settings UI overrides them and — unlike the row config — applies live.
  */
 export function apply(ctx, config) {
@@ -868,6 +1029,7 @@ export function apply(ctx, config) {
   const mount = {
     notice: config?.notice !== false,
     maxAutoContinues: resolveMaxAutoContinues(config),
+    preemptiveRatio: resolvePreemptiveRatio(config),
     // `livePresetParams: false` 关掉"把 preset 参数热同步给运行中的会话"。
     livePresetParams: config?.livePresetParams !== false,
   }

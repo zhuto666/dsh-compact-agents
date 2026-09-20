@@ -22,6 +22,7 @@ import {
   registerSettings,
   resetSettingsStateForTest,
   resolveMaxAutoContinues,
+  resolvePreemptiveRatio,
   setKeyInRow,
   setPresetFilesForTest,
   writePresetValues,
@@ -218,7 +219,7 @@ check('the composition layer carries the preset values',
   settings.resolved?.thresholdRatio === 0.35 && settings.resolved?.bootstrapMaxTokens === 1024,
   JSON.stringify(settings.resolved))
 check('a row config that the user never overrode stays a per-mount fallback',
-  liveConfig.maxAutoContinues === null && liveConfig.notice === null,
+  liveConfig.maxAutoContinues === null && liveConfig.notice === null && liveConfig.preemptiveRatio === null,
   JSON.stringify(liveConfig))
 check('a watcher is attached', settings.watchers.size === 1, `${settings.watchers.size} watcher(s)`)
 
@@ -231,12 +232,13 @@ check('a second mount does not turn its own row config into a global override',
 // 用户在设置里改动：自身旋钮立即生效，preset 参数落盘。
 for (const watcher of settings.watchers) {
   await watcher(
-    { notice: false, maxAutoContinues: 1, thresholdRatio: 0.45, retainRatio: 0.05, bootstrapMaxTokens: 16384 },
+    { notice: false, maxAutoContinues: 1, preemptiveRatio: 0.8, thresholdRatio: 0.45, retainRatio: 0.05, bootstrapMaxTokens: 16384 },
     settings.resolved,
   )
 }
 check('a settings change applies to the live knobs immediately',
-  liveConfig.notice === false && liveConfig.maxAutoContinues === 1, JSON.stringify(liveConfig))
+  liveConfig.notice === false && liveConfig.maxAutoContinues === 1 && liveConfig.preemptiveRatio === 0.8,
+  JSON.stringify(liveConfig))
 check('a changed preset value reaches the file',
   fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.45'),
   fs.readFileSync(target, 'utf8').split('\n').find(line => line.includes('thresholdRatio')) ?? '')
@@ -248,6 +250,17 @@ check('resolveMaxAutoContinues handles false/undefined/valid',
   && resolveMaxAutoContinues({}) === 2
   && resolveMaxAutoContinues({ maxAutoContinues: 7 }) === 7,
   `${resolveMaxAutoContinues({ maxAutoContinues: false })}/${resolveMaxAutoContinues({})}/${resolveMaxAutoContinues({ maxAutoContinues: 7 })}`)
+
+check('resolvePreemptiveRatio handles false/0/undefined/valid/out-of-range',
+  resolvePreemptiveRatio({ preemptiveRatio: false }) === 0
+  && resolvePreemptiveRatio({ preemptiveRatio: 0 }) === 0
+  && resolvePreemptiveRatio({}) === 0.9
+  && resolvePreemptiveRatio({ preemptiveRatio: 0.8 }) === 0.8
+  && resolvePreemptiveRatio({ preemptiveRatio: 1 }) === 1
+  && resolvePreemptiveRatio({ preemptiveRatio: 1.5 }) === 0.9
+  && resolvePreemptiveRatio({ preemptiveRatio: -1 }) === 0.9
+  && resolvePreemptiveRatio({ preemptiveRatio: 'x' }) === 0.9,
+  `${resolvePreemptiveRatio({ preemptiveRatio: false })}/${resolvePreemptiveRatio({ preemptiveRatio: 0 })}/${resolvePreemptiveRatio({})}/${resolvePreemptiveRatio({ preemptiveRatio: 0.8 })}/${resolvePreemptiveRatio({ preemptiveRatio: 1.5 })}`)
 
 // 5. 两端接口一致性：宿主 schema ↔ 卡片字段 ↔ 命名空间字符串。
 // 这个接口是刻意在两端各写一份的（宿主声明 schema，卡片渲染表单），所以必须有守卫钉住，

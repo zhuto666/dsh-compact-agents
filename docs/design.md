@@ -92,8 +92,8 @@ preset 里含注释与 `!!js` 表达式。用 YAML 反序列化再序列化会�
 |---|---|---|
 | `selftest.mjs` | 模块 | 可导入；`defineTool` 接受规格；工具名 `compact_agents`；参数枚举 `scope=others,all,self,ids`、`whenBusy=queue,skip`；`timeoutMs=1800000` |
 | `deferred-test.mjs` | 行为(假 ctx) | 首次忙 → 回报 `queued`；**无关 agent 的 idle 不误触发**；真正 idle 后 `compactNow` 被再次调用；一次性监听器已注销；日志含遮蔽统计 |
-| `integration-test.mjs` | 真机(真 Context + 真 ToolRuntime) | `inject` 解析；注册表可查出工具；参数/输出 schema 存在；`isConcurrencySafe` 是谓词且返回 `false`；`executionMode` 实测 `exclusive`；`execute(scope=others)` 排除调用者；返回值字段与 `CompactionResult` 一致；行内含压缩前后 token；`render()` 产出文本块；子代理扫描被拒；`scope=self` 忙时排队不报错；**`compaction/start` 追加可见提示(来源/summary/`surfaceOp`/非空 id)**；**`compaction/end` 给出 `213,400 → 49,800` 与遮蔽计数**；**失败压缩报"未完成"**；**无关事件不产生提示**；**`notice: false` 关掉提示但保留工具**；**`max-tokens` 轮结束自动续写一次且消息为冻结的 user**；**连续两次续写、第三次被上限拦住并播报**；**正常结束的轮次归还额度**；**`maxAutoContinues: 0` 关闭** |
-| `client-test.mjs` | 浏览器 half(假 `__ModuleLoader__`；真 React 18 + `react-dom/server` 或桩，两种模式都跑；`CLIENT_TEST_STUBS=1` 强制走桩) | 工厂 id = 包名、只 require 种子模块、`apply`/`inject` 形态；**三处槽位都订阅**（`settings.section` + `plugins.bundle.config` + `settings.plugin.item`）；**三处的注册形状各自正确** —— 老设置页 `key:` = settings 命名空间 `compact-agents`、新插件页 `key:` = 包名 `dsh-compact-agents`（两者都不是 `entryKey:`），设置分区是 **list** 形状：`id: 'compact-agents'` + `order: 26` + `label: '压缩与自动续写'` 且**没有 `key`**；三者都拿到组件函数；注入面动作齐全；渲染出五个字段与两组生效时机题注、越界阻止保存、`status !== 'ready'` 只留一句提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛；**新插件页那份：正文容器是 `dsh-ca-page`、不画 `dsh-ca-card`/`dsh-ca-header`/箭头、与卡片共用同一个控制器、`view: 'summary'` 给出一行摘要**；**设置分区那份：自带 `dsh-ca-section` 外壳、标题 + 引言 + 五个字段 + 保存都在、未就绪时只留标题 + 一句提示、与另外两处共用同一个控制器**；**三处互不连累**（三个方向各一条：分别让插件页 / 老设置页 / 设置分区抛，断言另外两处仍注册上且有 `console.warn`） |
+| `integration-test.mjs` | 真机(真 Context + 真 ToolRuntime) | `inject` 解析；注册表可查出工具；参数/输出 schema 存在；`isConcurrencySafe` 是谓词且返回 `false`；`executionMode` 实测 `exclusive`；`execute(scope=others)` 排除调用者；返回值字段与 `CompactionResult` 一致；行内含压缩前后 token；`render()` 产出文本块；子代理扫描被拒；`scope=self` 忙时排队不报错；**`compaction/start` 追加可见提示(来源/summary/`surfaceOp`/非空 id)**；**`compaction/end` 给出 `213,400 → 49,800` 与遮蔽计数**；**失败压缩报"未完成"**；**无关事件不产生提示**；**`notice: false` 关掉提示但保留工具**；**`max-tokens` 轮结束自动续写一次且消息为冻结的 user**；**连续两次续写、第三次被上限拦住并播报**；**正常结束的轮次归还额度**；**`maxAutoContinues: 0` 关闭**；**回合结束预压：远离触发线不动作 / 进判定带即压一次且提示标「回合结束预压」/ `noop` 后占用不涨不再重试 / 调用抛错不写成 `noop`（占用没涨也再试）/ 比例 `0` 完全关闭** |
+| `client-test.mjs` | 浏览器 half(假 `__ModuleLoader__`；真 React 18 + `react-dom/server` 或桩，两种模式都跑；`CLIENT_TEST_STUBS=1` 强制走桩) | 工厂 id = 包名、只 require 种子模块、`apply`/`inject` 形态；**三处槽位都订阅**（`settings.section` + `plugins.bundle.config` + `settings.plugin.item`）；**三处的注册形状各自正确** —— 老设置页 `key:` = settings 命名空间 `compact-agents`、新插件页 `key:` = 包名 `dsh-compact-agents`（两者都不是 `entryKey:`），设置分区是 **list** 形状：`id: 'compact-agents'` + `order: 26` + `label: '压缩与自动续写'` 且**没有 `key`**；三者都拿到组件函数；注入面动作齐全；渲染出六个字段与三组生效时机题注、越界阻止保存、`status !== 'ready'` 只留一句提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛；**新插件页那份：正文容器是 `dsh-ca-page`、不画 `dsh-ca-card`/`dsh-ca-header`/箭头、与卡片共用同一个控制器、`view: 'summary'` 给出一行摘要**；**设置分区那份：自带 `dsh-ca-section` 外壳、标题 + 引言 + 六个字段 + 保存都在、未就绪时只留标题 + 一句提示、与另外两处共用同一个控制器**；**三处互不连累**（三个方向各一条：分别让插件页 / 老设置页 / 设置分区抛，断言另外两处仍注册上且有 `console.warn`） |
 | `validate-presets.mjs` | 配置 | 每份 preset 可解析(含 `!!js` 标签)；挂载行在 `compaction` 组内；引用的绝对路径存在且指向本项目；报告 `thresholdRatio` / `retainRatio`；profile 侧"在 `dsh.profile.bundles` 里却不在 `dependencies` 里"→ FAIL 并打印修法（§8.5） |
 
 `integration-test.mjs` 用四个最小桩服务(`systemPrompt` / `compaction` / `tokenMeter` / `agents`)代替整个 Harness，所以**零模型调用、零成本**，可以随时跑。
@@ -262,7 +262,7 @@ ctx.on('session/event', (session, event) => {
 
 ## 8. 设置面：把旋钮搬进宿主的插件配置界面
 
-目标：压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数，五项都能在
+目标：压缩触发阈值、保留比例、受控阶段输出预算、提示开关、自动续写次数、回合结束预压比例，六项都能在
 **侧栏「插件」页**里改（DSH ≤ 0.1.5 是 **设置 → 插件 → 可配置**；上游 0.1.6 把这套界面搬走了，
 两代宿主的差异与我们的双注册见 §8.5），不必再编辑 preset 的 YAML。
 
@@ -296,7 +296,7 @@ slot 契约已被上游 `90af3110b7` 删除）；0.1.6 起搬到了侧栏「插�
 | 登记键写 `key:` 而不是 `entryKey:` | `ctx.slots.register({ name, key })` 用的是 `key`；`entryKey` 是**渲染侧** `renderSlot` 的派发选项（新页 `packages/client/ui-plugin-manager/src/client/PluginManagerPage.tsx:470`、老页 `ConfigurablePluginsTab.tsx` 都是这么传的）。两者不能混 |
 | **进程级只注册一次** | `SettingsProvider.register()` 对重复命名空间直接 `throw`，而注册挂在该 provider 的 fiber 上、不随调用者卸载。本插件挂在 preset 行上、每次换代都会重新 apply，所以必须用模块级缓存复用同一个 scope，否则换代时那一行会直接挂掉 |
 | 命名空间的 `base` 用 preset 文件里的**现值** | 表单里显示的就该是"真正生效的值"，而不是插件凭空给的默认值；三层优先级是「schema 默认 < 作文层（行配置 + preset 现值）< 用户层（界面）」 |
-| `applies: 'restart'` | 五项里三项要等新会话才生效，取保守声明；表单上逐项写明真实时机（三处注册共用同一份正文，见 §8.5 / §8.7） |
+| `applies: 'restart'` | 六项里三项要等新会话才生效，取保守声明；表单上逐项写明真实时机（三处注册共用同一份正文，见 §8.5 / §8.7） |
 
 ### 8.2 两类值，两种生效机制
 
@@ -323,7 +323,7 @@ slot 契约已被上游 `90af3110b7` 删除）；0.1.6 起搬到了侧栏「插�
 | 落盘 | 备份内容、无残留临时文件、字节级"只有目标行变了"、越界拒绝、幂等 |
 | 注册 | 命名空间名、`applies`、`base` 携带行配置与 preset 现值、schema 真能解析、**二次挂载不重复注册**、变更后自身旋钮立即生效且 preset 参数落盘 |
 | 两端一致性 | 表单里的字段集合必须**逐个等于**宿主 schema 的字段；两端的命名空间字符串必须一致。这个接口是刻意在两端各写一份的，没有守卫就会悄悄漂移 |
-| 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、**三处各注册一次且形状正确**（设置分区 = **list** 槽位 `settings.section`，用 `id`/`order`/`label`；插件页 = keyed，键 = 包名；老设置页 = keyed，键 = settings 命名空间）、真 React 渲染出五个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛、**一处注册失败不连累另外两处**（端到端清单见 §4 的 `client-test.mjs` 行，第三处的机制与理由见 §8.7） |
+| 浏览器 half | 工厂 id = 包名、`apply`/`inject` 形态、只 require 种子模块、**三处各注册一次且形状正确**（设置分区 = **list** 槽位 `settings.section`，用 `id`/`order`/`label`；插件页 = keyed，键 = 包名；老设置页 = keyed，键 = settings 命名空间）、真 React 渲染出六个字段与生效时机、越界阻止保存、`status !== 'ready'` 只渲染提示不抛、保存走 `scope.set`、重置走 `scope.unset`、写入被拒不抛、**一处注册失败不连累另外两处**（端到端清单见 §4 的 `client-test.mjs` 行，第三处的机制与理由见 §8.7） |
 
 ### 8.4 为什么浏览器 half 需要一行落在宿主组成里
 
@@ -676,4 +676,62 @@ preset 的 standing mount 按文件 stamp（`mtimeMs` + `size`）识别新一代
 恢复默认：各字段的「重置」回到 preset 里的值；`thresholdRatio: 0.8` 是 DSH 出厂值（1M 窗口 ⇒ 800K，
 实际等于"几乎永不触发"）。
 
+## 10. 回合结束预压：把判定点前移一个回合（v0.8.5）
 
+### 10.1 问题：判定点在"新消息之后"，所以卡在回答开头
+
+引擎的自动压缩挂在 `agent/pre-step`（`packages/compaction/compaction-basic/src/index.ts`，判定见 §5）：
+**每个模型请求之前**先量一次 `totalTokens`，达线就先摘要、再发请求。这个位置决定了一件事 ——
+判定发生在**用户的新消息已经进了会话之后**（`pre-step` 是"这一轮的第一步"），于是最常见的现场：
+
+```
+上一轮结束：占用 178K，触发线 200K     ← 没达线，什么都不会发生
+用户发了一条新消息：占用 196K          ← 差一点
+pre-step 量到 196K：达线 → 摘要 15s    ← 这 15s 全在"第一个 token 之前"
+```
+
+用户的体感是**回答开头卡着不动**，而不是"压缩慢"。而这一次压缩本来可以在上一轮结束时做掉 ——
+那时占用 178K，唯一缺的是"提前一个回合动手"这个决定。
+
+### 10.2 方案：`turn/end` 判定，`agent/status idle` 动手
+
+判定带 = 触发线 × `preemptiveRatio`（默认 0.9），判定点在 `turn/end`：
+
+| 步 | 动作 | 为什么 |
+|---|---|---|
+| 1 | `turn/end` 到达时量占用，`tokens >= line × ratio` 才继续 | 与引擎同一把尺：`ctx.tokenMeter.measure()`，触发线复用 `effectiveLine()`（§6.4 的 patch 回退也一并生效） |
+| 2 | 只**排队**（`scheduleWhenIdle`），不立刻压 | `compactNow` → `agent.runMaintenance` 要求 `phase.kind === 'idle'`，轮次还在收尾时调用会直接抛 |
+| 3 | 收到 `agent/status → idle` 时调 `compactNow` | `kick()` 的 finally 在轮末把 phase 置回 `idle`，这是唯一安全的落点 |
+| 4 | 记 `markPreemptive(session)` | 让 `compaction/start` 那条提示改口成"回合结束预压"，与达线触发区分开 |
+| 5 | 复用 `markSelfCompaction` | 否则 `verifyPatch()` 会把我们自己发起的这次压缩当成"热同步没生效"的反证 |
+
+顺序上也刻意如此：**先把摘要排进"回答已交付"的空档，再让新消息进来**。排队用的是既有的一条路径
+（§2.4 的"忙则排队"），没有新增并发面。
+
+### 10.3 退避：压不动的会话不能每轮白试一次
+
+`compactNow` 可能返回 `null`（`noop`，单个保留单元本身就超预算，表面压缩修不了）。若不做退避，
+这样一个会话会在**每个回合结束**都真实调一次摘要模型、再原样失败 —— 纯烧钱。所以记下 noop 时的占用，
+**占用没涨 5% 以上就不再重试**（`PREEMPTIVE_RETRY_GROWTH`），占用明显上涨（有新内容进来）才重新尝试。
+
+退避只认"跑成了、但没压动"（`compactNow` 返回 `null`）。**调用本身抛错不算**：那通常意味着 agent 还在收尾
+或被取消（`compactNow` 走 `runMaintenance`，非 idle 会抛），与上下文形状无关 —— 把它也记成 `noop`
+会让这个会话白等好几轮，所以 `after(result, failed)` 里的 `failed` 分支直接返回、不写退避。
+
+### 10.4 代价（诚实披露）
+
+- **延迟是被搬走，不是被消灭**：回答完立刻追问，等待照样发生 —— 等的是上一轮的尾巴，不是这一轮的开头。
+  真正的收益在"回答 → 阅读 → 再问"这个最常见的节奏里。
+- **只覆盖一半情形**：跨线若由**用户的新消息自己**造成（上一轮结束时离得远、用户贴了一大段），
+  预压当时不在带内，回答开头仍会卡一次。判定点无法早于那条消息存在 —— 除非去改引擎的 `pre-step`，
+  那属于改宿主（§9.4 的同一条原则）。
+- **可能多花一次摘要费**：默认 0.9 贴着线，所以只有"已经快满了"的会话会提前压；比例调低会换来更早的
+  准备，也换来更频繁的摘要。
+- **预压与达线是同一套机制的两端**：预压生效后，`pre-step` 那条路基本只在"预压没压动"或"这一轮涨得
+  特别快"时才轮到。
+
+### 10.5 这一项是"活旋钮"，不是 preset 值
+
+`preemptiveRatio` 与 `notice` / `maxAutoContinues` 同类：**事件发生时才读**（这里是 `turn/end`），
+因此改完立即生效，不写 preset、不需要新会话（§9.4 说的是那三个必须写 preset 的值）。
+三级优先级照旧：行配置 `preemptiveRatio: 0`（或 `false`）< 设置界面用户层；`0` 是关闭。

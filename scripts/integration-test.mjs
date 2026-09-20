@@ -19,8 +19,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import { setPresetFilesForTest } from '../settings.js'
-import { resetHotSyncStateForTest } from '../index.js'
+import { liveConfig, setPresetFilesForTest } from '../settings.js'
+import { resetHotSyncStateForTest, resetPreemptiveStateForTest } from '../index.js'
 import * as plugin from '../index.js'
 
 /** ToolRuntime 构造期需要的最小 systemPrompt 桩。 */
@@ -521,6 +521,125 @@ check('maxAutoContinues: 0 disables auto-continue', offAgent.followups.length ==
   setPresetFilesForTest(null)
   delete surface.requestHeader
   delete ctx.get('compaction').config
+}
+
+// ---------------------------------------------------------------------------
+// 13. 回合结束预压（v0.8.5）：占用贴近触发线时，在**这一轮结束之后**就把压缩做掉，
+//     把摘要模型的耗时从"下一轮第一个 token 之前"挪进"回答已交付"的空档里。
+//     判定带 = 触发线 × preemptiveRatio（默认 0.9），0 关闭。
+// ---------------------------------------------------------------------------
+{
+  const preFixture = path.join(os.tmpdir(), `dsh-ca-pre-${process.pid}.yml`)
+  fs.writeFileSync(preFixture, [
+    '- id: compaction',
+    '  name: cordis:group',
+    '  config:',
+    '    - id: compaction-basic',
+    '      config:',
+    '        thresholdRatio: 0.2',
+    '',
+  ].join('\n'))
+  setPresetFilesForTest([preFixture])
+  resetPreemptiveStateForTest()
+
+  const preCtx = new Context()
+  preCtx.plugin(StubSystemPrompt)
+  preCtx.plugin(ToolRuntime)
+  preCtx.plugin(StubCompaction)
+  preCtx.plugin(StubTokenMeter)
+  preCtx.plugin(StubLlm)
+  preCtx.plugin(StubAgents)
+  preCtx.plugin(plugin)
+  await settle()
+
+  const preAgent = preCtx.get('agents').rootAgent
+  // 换个会话/agent id：模块级的"已排队"集合是进程级的，别和前面用例的 'session-root' 撞。
+  preAgent.id = 'session-pre'
+  preAgent.session.id = 'session-pre'
+  // 触发线按 `provider/model` 查窗口；'p/m' 的 1M 窗口在前面已经查过、进了缓存。
+  preAgent.session.requestHeader = () => ({ config: { provider: 'p', model: 'm' } })
+  const preMeter = preCtx.get('tokenMeter')
+  const preCompaction = preCtx.get('compaction')
+  preCompaction.config = { thresholdRatio: 0.2, retainRatio: 0.05, modelPolicies: [] }
+
+  const preSurface = preAgent.session
+  const endTurn = async (turn) => {
+    await preCtx.emit('session/event', preSurface, {
+      type: 'turn/end', seq: 950 + turn, time: 0, data: { turn, reason: { kind: 'stop' } },
+    })
+    await preCtx.emit('agent/status', { agent: preAgent, status: 'idle' })
+    await settle()
+  }
+  /**
+   * 引擎的 `compactNow` 会在摘要之前发 `compaction/start`（插件的提示就挂在这个事件上），
+   * 桩这里照做；`result` 传 null 模拟"压不动"（noop）。
+   * @param result - 返回给插件的结果，null 表示没有可安全压缩的区间。
+   */
+  const installStub = (result) => {
+    preCompaction.compactNow = async () => {
+      preCompaction.calls += 1
+      await preCtx.emit('session/event', preSurface, {
+        type: 'compaction/start', seq: 990 + preCompaction.calls, time: 0,
+        data: { compactionId: `pre-${preCompaction.calls}`, turn: 99 },
+      })
+      if (result === null) return null
+      preMeter.total = 500
+      return result
+    }
+  }
+  const COMPACTED = { shadowedRange: { start: 1, end: 2 }, shadowedSeqs: [1, 2], shadowedTokenCount: 4242 }
+  installStub(COMPACTED)
+
+  // (a) 明显低于判定带（1M × 0.2 × 0.9 = 180K）：什么都不做。
+  preMeter.total = 100_000
+  await endTurn(1)
+  check('回合结束预压：远离触发线时不动作', preCompaction.calls === 0, `${preCompaction.calls} call(s)`)
+
+  // (b) 进入判定带：排队 → agent idle → 压一次，并在对话区说明这次是预压。
+  preMeter.total = 190_000
+  await endTurn(2)
+  check('回合结束预压：贴近触发线时在回合结束后压一次', preCompaction.calls === 1,
+    `${preCompaction.calls} call(s)`)
+  const preNotice = preSurface.appended.at(-1)
+  check('回合结束预压：提示里说明这是预压、不是达线',
+    String(preNotice?.data?.source?.summary).includes('回合结束预压'),
+    String(preNotice?.data?.source?.summary))
+  check('回合结束预压：提示也带上了触发线', String(preNotice?.data?.source?.summary).includes('触发线 ×0.2'),
+    String(preNotice?.data?.source?.summary))
+
+  // (c) 压不动（noop，例如单个超大保留单元）：占用没实质增长就不再白试。
+  installStub(null)
+  preMeter.total = 190_000
+  await endTurn(3)
+  check('回合结束预压：压不动时记一次 noop', preCompaction.calls === 2, `${preCompaction.calls} call(s)`)
+  preMeter.total = 195_000
+  await endTurn(4)
+  check('回合结束预压：noop 之后占用没涨幅就不再重试', preCompaction.calls === 2,
+    `${preCompaction.calls} call(s)`)
+  preMeter.total = 250_000
+  await endTurn(5)
+  check('回合结束预压：占用明显上涨后重新尝试', preCompaction.calls === 3, `${preCompaction.calls} call(s)`)
+
+  // (d) 报错（例如 agent 还在收尾、信号被取消）**不算**"压不动"：占用没涨也要再试。
+  resetPreemptiveStateForTest()
+  preCompaction.compactNow = async () => { preCompaction.calls += 1; throw new Error('busy') }
+  preMeter.total = 250_000
+  await endTurn(6)
+  check('回合结束预压：这一轮报错仍然记一次尝试', preCompaction.calls === 4, `${preCompaction.calls} call(s)`)
+  preMeter.total = 250_100
+  await endTurn(7)
+  check('回合结束预压：报错不写成 noop 退避（占用没涨也再试）', preCompaction.calls === 5,
+    `${preCompaction.calls} call(s)`)
+
+  // (e) 关掉：比例 0（设置界面里的"关闭"，或行配置 `preemptiveRatio: 0`）。
+  liveConfig.preemptiveRatio = 0
+  preMeter.total = 199_000
+  await endTurn(8)
+  check('回合结束预压：比例 0 时完全关闭', preCompaction.calls === 5, `${preCompaction.calls} call(s)`)
+  liveConfig.preemptiveRatio = null
+
+  resetPreemptiveStateForTest()
+  setPresetFilesForTest(null)
 }
 
 console.log(failed === 0 ? '\nALL OK' : `\n${failed} failure(s)`)

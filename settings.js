@@ -13,8 +13,8 @@
  *
  * ## 两类值，两种生效时机
  *
- * - `notice` / `maxAutoContinues` 是**本插件自己**的旋钮 → 存在模块级 `liveConfig` 里，
- *   会话事件的监听器在**事件发生的那一刻**读它，所以改完立即生效。
+ * - `notice` / `maxAutoContinues` / `preemptiveRatio` 是**本插件自己**的旋钮 → 存在模块级
+ *   `liveConfig` 里，会话事件的监听器在**事件发生的那一刻**读它，所以改完立即生效。
  * - `thresholdRatio` / `retainRatio` / `bootstrapMaxTokens` 属于 preset 里的其它插件，
  *   我们不能替它们改运行时策略 → 改的是**preset 文件本身**。preset 的挂载会记录文件
  *   stamp，stamp 变了就给**之后新建的会话**开新一代（`agent-presets` 的 mount 契约），
@@ -41,6 +41,7 @@ export const SETTINGS_NAMESPACE = 'compact-agents'
 export const SETTINGS_FIELDS = Object.freeze({
   notice: '"是否在对话区播报压缩进度" —— 属于本插件，改完立即生效',
   maxAutoContinues: '"被输出上限截断时自动续写几次" —— 属于本插件，改完立即生效',
+  preemptiveRatio: '"回合结束时占用达到触发线的多少就先压一次"（0 关闭）—— 属于本插件，改完立即生效',
   thresholdRatio: '"压缩触发阈值比例"(0.35 = 窗口 100 万 tokens 时约 35 万处触发) —— 写进预设，并热同步给运行中的会话',
   retainRatio: '"压缩后保留比例" —— 写进预设，并热同步给运行中的会话',
   bootstrapMaxTokens: '"受控阶段的请求输出预算" —— 写进预设，新会话生效',
@@ -64,6 +65,7 @@ const PRESET_RANGES = Object.freeze({
 export const liveConfig = {
   notice: null,
   maxAutoContinues: null,
+  preemptiveRatio: null,
 }
 
 /** 本进程唯一那次注册用的作文层；用来判断某个值到底是不是"用户改过"。 */
@@ -106,6 +108,30 @@ export function setPresetFilesForTest(files) {
 
 /** `maxAutoContinues` 的默认值：连续截断时最多自动续写两次。 */
 export const DEFAULT_MAX_AUTO_CONTINUES = 2
+
+/** `preemptiveRatio` 的默认值：占用达到触发线的 90% 时，在回合结束就先压一次。 */
+export const DEFAULT_PREEMPTIVE_RATIO = 0.9
+
+/**
+ * 解析行配置里的「回合结束预压比例」。
+ *
+ * 这是**作文层**：它进 settings 命名空间的 `base`，用户层（设置界面）盖在它上面，
+ * 所以三层的优先级是「schema 默认 < preset 行配置 < 设置界面」。
+ *
+ * 语义：一轮结束时若占用已达「触发线 × 该比例」，就先把压缩做掉 —— 把摘要模型的耗时
+ * 从"下一轮的第一个 token 之前"挪到"这一轮回答之后的空档里"。达线的兜底仍由
+ * `compaction-basic` 负责，这一项只决定"要不要提前动手"。
+ *
+ * @param config - 行配置；`preemptiveRatio: 0` 或 `false` 关闭预压。
+ * @returns 0 表示关闭，否则为触发线的占比（0 < r ≤ 1）。
+ */
+export function resolvePreemptiveRatio(config) {
+  const raw = config?.preemptiveRatio
+  if (raw === false) return 0
+  if (raw === undefined) return DEFAULT_PREEMPTIVE_RATIO
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1) return raw
+  return DEFAULT_PREEMPTIVE_RATIO
+}
 
 /**
  * 解析行配置里的自动续写次数上限。
@@ -471,6 +497,10 @@ function applySettings(ctx, next, previous) {
     || typeof next.maxAutoContinues !== 'number'
     ? null
     : next.maxAutoContinues
+  liveConfig.preemptiveRatio = next.preemptiveRatio === base.preemptiveRatio
+    || typeof next.preemptiveRatio !== 'number'
+    ? null
+    : next.preemptiveRatio
   if (previous === undefined) return
   const wanted = {}
   for (const key of Object.keys(PRESET_KEYS)) {
@@ -553,11 +583,13 @@ async function doRegister(ctx, config) {
   const base = {
     notice: config?.notice !== false,
     maxAutoContinues: resolveMaxAutoContinues(config),
+    preemptiveRatio: resolvePreemptiveRatio(config),
     ...values,
   }
   const schema = z.object({
     notice: z.boolean().default(true),
     maxAutoContinues: z.number().step(1).min(0).max(10).default(2),
+    preemptiveRatio: z.number().min(0).max(1).default(DEFAULT_PREEMPTIVE_RATIO),
     thresholdRatio: z.number().min(0.05).max(0.95).default(0.35),
     retainRatio: z.number().min(0.01).max(0.5).default(0.05),
     bootstrapMaxTokens: z.number().step(1).min(1024).max(200000).default(16384),
@@ -595,4 +627,5 @@ export function resetSettingsStateForTest() {
   presetValuesCache = null
   liveConfig.notice = null
   liveConfig.maxAutoContinues = null
+  liveConfig.preemptiveRatio = null
 }

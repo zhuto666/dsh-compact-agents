@@ -60,7 +60,7 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 
 `client-host.js` 刻意 `inject = []`：宿主根上**没有** `compaction` 服务，声明它只会让这一行永远 pending。
 
-## 设置面：两个 half，五种旋钮
+## 设置面：两个 half，六种旋钮
 
 命名空间恒为 `compact-agents`(`client-host.js` 注册)。**三处注册的键/形状各不相同，别混**：① `settings.section` 是 **list** 槽位，用 `id: 'compact-agents'` + `order: 26` + `label: '压缩与自动续写'`，**没有 `key`**(v0.8.1 主入口，见 `docs/design.md` §8.7)；② `plugins.bundle.config` 是 keyed 槽位，键 = 包名 `dsh-compact-agents`；③ `settings.plugin.item` 是 keyed 槽位，键 = settings 命名空间 `compact-agents`。字段与生效机制分两类，**改字段要同时动 `settings.js` 的 `SETTINGS_FIELDS`/`PRESET_KEYS`/`PRESET_RANGES` 与浏览器 half**；三处注册里的 `label`/`order` 也在这一处 —— `lib/client.js` 的 `registerSection()`(`label` 跟着分区标题走；`order` 只决定侧栏排位、与字段无关)：
 
@@ -68,11 +68,12 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 |---|---|---|---|
 | `notice` | 本插件 | `liveConfig` | 立即(会话事件监听器实时读) |
 | `maxAutoContinues` | 本插件 | `liveConfig` | 立即 |
+| `preemptiveRatio` | 本插件 | `liveConfig` | 立即(默认 0.9，`0`/`false` 关闭；`turn/end` 时按"触发线 × 比例"判定，达成即排队、`agent/status idle` 时压，见 `docs/design.md` §10) |
 | `thresholdRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | **保存即热同步**进运行中的实例；文件供新会话 |
 | `retainRatio` | 宿主 compaction | preset 的 `compaction-basic` 行 | 同上 |
 | `bootstrapMaxTokens` | 宿主 tool-bootstrap | preset 的 `tool-bootstrap` 行 | 仅新会话(值在 `apply()` 里被捕获进闭包，改不动) |
 
-优先级三层：**schema 默认 < preset 行配置 < 设置界面(用户层)**。`maxAutoContinues` 默认 2，`0`/`false` 关闭自动续写。
+优先级三层：**schema 默认 < preset 行配置 < 设置界面(用户层)**。`maxAutoContinues` 默认 2，`0`/`false` 关闭自动续写；`preemptiveRatio` 默认 0.9，`0`/`false` 关闭回合结束预压。
 
 契约：宿主侧的 schema 由 `@deepseek-ai/schemastery` **动态** import 提供(缺了只少那份配置表单，不影响工具)；表单在命名空间未 `ready` 时只渲染一句提示，**任何时候都不许抛异常**(同一棵树里别的卡片会被带崩)。**三处注册都必须各自包 try/catch**：同一 key/`id` 重复注册会抛、宿主版本差异也可能抛，一处注册不上(只 `console.warn` 一行)不能连累另外两处 —— `lib/client.js` 的 `registerInto()` 与 `registerSection()` 就是这么做的，`client-test.mjs` 三个方向各锁一条。
 
@@ -81,6 +82,7 @@ node scripts/uninstall.mjs --dry-run  # 卸载预演
 - 只同步 `thresholdRatio` / `retainRatio`（都在 `ResolvedConfig` 里、都在调用时读），并守住 `retainRatio < thresholdRatio`；`bootstrapMaxTokens` 不在其中。
 - `modelPolicies` 精确命中 provider+model 时**只改命中那条**（连带重建数组），没命中才改全局 —— 与引擎 `resolveTargetPolicy` 同款。
 - 写完**读回校验**，读不到/写不进/形状不对一律原样返回并保留"旧代际"提示兜底；`livePresetParams: false` 可整体关闭。别把这条路径写成会抛异常的强依赖。
+- **回合结束预压的自我标记（v0.8.5）**：预压走的是同一条 `scheduleWhenIdle` 排队路径，因此**必须**复用 `markSelfCompaction`，否则复盘时会把这次压缩当成"热同步没生效"的反证；判定带用的 `effectiveLine()` 也要走 `patchFailed` 回退，保证与引擎实际用的比例同源。
 - **自我反证（v0.7.1）**：写进去 ≠ 引擎吃了。补丁落下时留一个待验证（并预先用 `ctx.get('llm').resolveModelInfo` 查好窗口 —— `llm` 不在 inject 里，`ctx.llm` 会抛），下一次**策略自己决定**的压缩若发生在 `[窗口×旧值, 窗口×新值)` 内，就判定引擎没吃，此后按旧值报。采信边界：`data.turn === null`、带 `sourceCommandId`、以及我们自己工具触发的压缩（60 秒会话标记）一律不采信；反证必须在**同步之前**（顺序反了会拿按旧阈值判出来的本次压缩当新阈值的证据）。
 
 ## 改动生效时机(最容易踩的坑)
