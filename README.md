@@ -235,29 +235,7 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 
 ## 更新历史
 
-版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。条目只记**对使用者可见**的变化，按 `新增` / `变更` / `修复` / `文档` 分类。
-
-### 0.8.4 — 2026-09-20
-
-**文档**（无代码改动）
-
-- 「更新历史」重写为「版本 + 日期 + 变更类型」的结构化列表，补齐 0.5.x 系列与逐版本提交链接，删除叙述性文字，只保留对使用者可见的变化。
-
-### [0.8.3](https://github.com/zhuto666/dsh-compact-agents/commit/a4ce296) — 2026-09-20
-
-**文档**（无代码改动）
-
-- 重写 `README.md` 与 `README.en.md`（583 / 617 行 → 各 255 行），章节按「安装 → 使用 → 排错 → 设计说明」重组，删除与 `docs/design.md` 重复的机制叙述。
-- 主截图更换为 DSH `0.1.6-alpha.2` 实拍的「设置 → 压缩与自动续写」页：`docs/images/settings-section-annotated.png`（①–⑥ 标注 + 右侧图例）与未标注原图 `docs/images/settings-section.png`；DSH ≤ 0.1.5 的插件页卡片图转为存档，不再作为主图引用。
-- `docs/images/README.md` 同步：收录表、标注约定与截图来源/做法。
-- `package.json` 的 `dshhub.summary` 改为「表单自成一页：设置 → 「压缩与自动续写」」，与 v0.8.1 之后的实际入口一致。
-
-### [0.8.2](https://github.com/zhuto666/dsh-compact-agents/commit/7935293) — 2026-09-18
-
-**修复**（文档，无代码改动）
-
-- 参数分组更正为界面上的三组：`压缩触发阈值比例`、`压缩后保留比例` 由「新建会话生效」改为「写入预设并热同步」（v0.7.0 起保存即热同步进运行中的会话）。
-- 文档字段名与界面标签逐字对齐：`压缩进度提示` → `压缩提示播报`，`自动续写次数` → `自动续写次数上限`。
+只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
 
 ### [0.8.1](https://github.com/zhuto666/dsh-compact-agents/commit/5f91f64) — 2026-09-18
 
@@ -275,13 +253,6 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 
 - 参数卡片在 DSH 0.1.6 上不显示：老槽位 `settings.plugin.item` 的渲染方已被上游移除，且槽位未声明时 `ctx.slots.inject` 静默不执行。新增注册 `plugins.bundle.config`（键为包名）。
 - 本包在插件页被整条过滤：该页只列 profile `dependencies` 中的包，仅登记 `dsh.profile.bundles` 不够。安装脚本改为同时写入两者。
-
-### [0.7.4](https://github.com/zhuto666/dsh-compact-agents/commit/2a72433) — 2026-09-16
-
-**修复**
-
-- README 版本徽章与 `package.json` 对齐（原停留在 `0.4.0`，而市场收录抓取的正是 README）。
-- 「徽章版本 == `package.json` 版本」纳入 `npm test` 校验。
 
 ### [0.7.3](https://github.com/zhuto666/dsh-compact-agents/commit/daa5498) — 2026-09-15
 
@@ -323,30 +294,6 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 **修复**
 
 - 测试守卫由局部比对改为全文快照比对，消除长期存在的误报。
-
-### [0.5.6](https://github.com/zhuto666/dsh-compact-agents/commit/2523d8a) — 2026-09-15
-
-**文档**
-
-- `CLAUDE.md` 补充仓库地图、设置面五个参数的归属与生效机制；移除一条与全局硬约束冲突的约定。
-
-### [0.5.5](https://github.com/zhuto666/dsh-compact-agents/commit/dc52b6c) — 2026-09-15
-
-**文档**
-
-- 加入带标注的设置界面截图。
-
-### [0.5.4](https://github.com/zhuto666/dsh-compact-agents/commit/1bb19ff) — 2026-09-15
-
-**文档**
-
-- 加入压缩链路示意图，并预留界面截图位。
-
-### [0.5.3](https://github.com/zhuto666/dsh-compact-agents/commit/a97f3eb) — 2026-09-15
-
-**文档**
-
-- 逐个说明五个参数各自管什么。
 
 ### [0.5.2](https://github.com/zhuto666/dsh-compact-agents/commit/9666200) — 2026-09-15
 

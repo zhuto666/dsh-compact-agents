@@ -235,29 +235,7 @@ Changing the plugin's `.js` (including `client-host.js` / `settings.js`) or anyt
 
 ## Changelog
 
-Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from. Entries list only **user-visible** changes, grouped as `Added` / `Changed` / `Fixed` / `Docs`.
-
-### 0.8.4 — 2026-09-20
-
-**Docs** (no code change)
-
-- Rewrote this changelog as a structured list of version + date + change type, filling in the 0.5.x series and per-version commit links, and dropping narrative prose in favour of user-visible changes only.
-
-### [0.8.3](https://github.com/zhuto666/dsh-compact-agents/commit/a4ce296) — 2026-09-20
-
-**Docs** (no code change)
-
-- Rewrote `README.md` and `README.en.md` (583 / 617 lines → 255 each) around install → use → troubleshooting → design notes, removing mechanism prose that duplicates `docs/design.md`.
-- New main screenshot: the real DSH `0.1.6-alpha.2` `Settings → 压缩与自动续写` page — `docs/images/settings-section-annotated.png` (call-outs ①–⑥ plus a legend) and the unannotated `docs/images/settings-section.png`; the DSH ≤ 0.1.5 Plugins-page card is kept as an archive only.
-- `docs/images/README.md` updated: inventory table, annotation convention and the screenshot source/method.
-- `dshhub.summary` in `package.json` changed to "the form is its own page: Settings → 「压缩与自动续写」", matching the real entry point since v0.8.1.
-
-### [0.8.2](https://github.com/zhuto666/dsh-compact-agents/commit/7935293) — 2026-09-18
-
-**Fixed** (docs only, no code change)
-
-- Parameter grouping corrected to the three groups shown in the UI: `压缩触发阈值比例` and `压缩后保留比例` moved from "takes effect for new sessions" to "written to the preset *and* hot-synced" (true since v0.7.0).
-- Documented field names aligned verbatim with the UI labels: `压缩进度提示` → `压缩提示播报`, `自动续写次数` → `自动续写次数上限`.
+Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
 
 ### [0.8.1](https://github.com/zhuto666/dsh-compact-agents/commit/5f91f64) — 2026-09-18
 
@@ -275,13 +253,6 @@ Versions follow [Semantic Versioning](https://semver.org/); the date is the comm
 
 - The parameter card was invisible on DSH 0.1.6: upstream removed the renderer for the old `settings.plugin.item` slot, and `ctx.slots.inject` fails silently on an undeclared slot. Added a `plugins.bundle.config` registration (keyed by package name).
 - The package was filtered out of the Plugins page entirely: that page lists only bundles present in the profile `dependencies`, so registering in `dsh.profile.bundles` alone is not enough. The installer now writes both.
-
-### [0.7.4](https://github.com/zhuto666/dsh-compact-agents/commit/2a72433) — 2026-09-16
-
-**Fixed**
-
-- README version badge aligned with `package.json` (it had been stuck at `0.4.0`, and the marketplace scrapes the README).
-- "Badge version == `package.json` version" is now enforced by `npm test`.
 
 ### [0.7.3](https://github.com/zhuto666/dsh-compact-agents/commit/daa5498) — 2026-09-15
 
@@ -323,30 +294,6 @@ Versions follow [Semantic Versioning](https://semver.org/); the date is the comm
 **Fixed**
 
 - The test guard now compares full snapshots instead of a fragment, removing a long-standing false positive.
-
-### [0.5.6](https://github.com/zhuto666/dsh-compact-agents/commit/2523d8a) — 2026-09-15
-
-**Docs**
-
-- `CLAUDE.md` gained a repository map plus the ownership and effect timing of the five Settings parameters; one convention that conflicted with a global hard rule was removed.
-
-### [0.5.5](https://github.com/zhuto666/dsh-compact-agents/commit/dc52b6c) — 2026-09-15
-
-**Docs**
-
-- Added an annotated screenshot of the Settings UI.
-
-### [0.5.4](https://github.com/zhuto666/dsh-compact-agents/commit/1bb19ff) — 2026-09-15
-
-**Docs**
-
-- Added a compaction-pipeline diagram and reserved a slot for a UI screenshot.
-
-### [0.5.3](https://github.com/zhuto666/dsh-compact-agents/commit/a97f3eb) — 2026-09-15
-
-**Docs**
-
-- Explained what each of the five parameters actually controls.
 
 ### [0.5.2](https://github.com/zhuto666/dsh-compact-agents/commit/9666200) — 2026-09-15
 
