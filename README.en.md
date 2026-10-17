@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.8.5-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.9.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -268,11 +268,46 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 - **No orphan-data / state cleanup**: the plugin is stateless (zero persistence, zero network, does not change the automatic compaction policy).
 - **DSH development-checkout layout only**: the installer requires both `packages/core/tools` and `vendor/cordis` inside the checkout; a global `npm i -g` layout is unverified.
 - **The Plugins-page enable / disable switch only covers the browser half**: turning it off moves the host-composition row (`compact-agents-client-host`) and the form disappears; the `compact_agents` tool comes from the preset row and keeps working, independently of that switch.
-- **A shipped preset is wiped by its own plugin upgrade**: the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` is inserted at install time and a plugin upgrade rewrites the whole file; re-running `scripts/install.mjs` restores it. The same place has one more shadowing rule: a shipped preset with the same id overrides a user-built one.
+- **A shipped preset is wiped by its own plugin upgrade**: whether it is the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` or an override block `- id: preset-<shipped name>` in the profile patch, it is written at install time; a plugin upgrade rewrites it wholesale, and a DSH upgrade can add new presets. Re-running `scripts/install.mjs` fixes it — it covers **every** shipped preset found in the checkout, and `validate-presets.mjs` FAILs on any that is left out. The same place has one more shadowing rule: a shipped preset with the same id overrides a user-built one.
 
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.9.1 — 2026-10-17
+
+**Fixed**
+
+- **"The feature disappeared" on DSH 0.2.1-alpha.3**: that release added a `cordis` preset (also the default preset for new sessions), while the installer only patched a fixed set of presets. Sessions using the new preset had neither the `compact_agents` tool nor the compaction notices or auto-continuation, yet `validate-presets.mjs` reported `ALL OK`. The installer now **enumerates every shipped preset** in the checkout (`packages/bundle/web-app/presets/*.patch.yml`) and patches each one, and the validator FAILs when any shipped preset is left uncovered — a preset added upstream later fails loudly instead of silently.
+- Refreshing an override block now **rebuilds it from the shipped content and then merges your hand-added rows**: rows added upstream (such as `time-context`, `tool-schedule`) are picked up, rows you added by hand (such as `tool-ralph`, `tool-subagent-*`) survive the refresh, and any `thresholdRatio` / `retainRatio` you tuned is kept.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched. A `dsh` restart is still required after installing (the host composition changed); new sessions pick it up immediately afterwards.
+
+### 0.9.0 — 2026-09-24
+
+**Requires DSH ≥ 0.1.7-alpha.2. Do not install on 0.1.5 / 0.1.6.**
+
+**Changed**
+
+- Follows the upstream settings-model rework (commit `601d6761e4`). Upstream removed the client
+  service `settingsScope` (replaced by `configForms` + `settingsSchema`) and removed
+  `SettingsProvider.register()` — a settings form now comes from **the `Config` that each profile
+  entry exports itself**. Both halves of this plugin were migrated: the six fields, their defaults
+  and their ranges are declared in `client-host.js`'s `Config`; edits made in the UI land in the
+  profile patch's `config:` section and are then synced into the preset file by the plugin.
+- **On 0.1.5 / 0.1.6 this version makes the entire Web UI fail to load** (the browser half declares
+  `configForms`, which never arrives, so its entry stays pending and takes the whole client plugin
+  tree down with it). Those releases are marked `incompatible` in `dsh.compatibility`.
+- Form defaults are seeded from the preset file's **current values**: the UI opens on what is
+  actually in effect, and a field you never touched is never written back — **hand-editing the
+  preset file still counts**.
+
+**Unchanged**
+
+- The `compact_agents` tool, the in-conversation compaction notices, end-of-turn preemption, and
+  auto-continuation after an output-limit truncation are all unaffected.
 
 ### 0.8.5 — 2026-09-20
 

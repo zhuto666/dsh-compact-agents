@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.8.5-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.9.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -268,11 +268,36 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 - **不做孤儿数据 / 状态清理**：本插件无状态（零持久化、零网络、不改变自动压缩策略）。
 - **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；全局 `npm i -g` 的布局未验证。
 - **插件页的启用 / 停用开关只管浏览器 half**：关掉它，动的是宿主组成里那一行（`compact-agents-client-host`），表单不再出现；而 `compact_agents` 工具由 preset 行提供，与这个开关无关，照常可用。
-- **随包发行的 preset 会被它自己的插件升级冲掉**：`<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行是安装时插进去的，插件升级会整份重写掉它；重跑 `scripts/install.mjs` 即可。同一处还有一层遮蔽：同 id 的发行 preset 会盖掉用户自建的 preset。
+- **随包发行的 preset 会被它自己的插件升级冲掉**：无论 `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行，还是 profile 补丁里 `- id: preset-<随包名>` 的覆盖块，都是安装时写进去的；插件升级会整份重写它，DSH 升级还会新增 preset。重跑 `scripts/install.mjs` 即可 —— 它按检出里的**全部**随包 preset 重新覆盖，漏掉哪份 `validate-presets.mjs` 会直接 FAIL。同一处还有一层遮蔽：同 id 的发行 preset 会盖掉用户自建的 preset。
 
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.9.1 — 2026-10-17
+
+**修复**
+
+- **DSH 0.2.1-alpha.3 上"功能没了"**：新版本新增了 `cordis` 预设（还是新建会话的默认预设），而安装脚本只往固定的几份预设里补挂载行 —— 选到新预设的对话既没有 `compact_agents` 工具，也没有压缩播报与自动续写，`validate-presets.mjs` 却报 `ALL OK`。现在安装脚本**枚举检出里所有随包预设**（`packages/bundle/web-app/presets/*.patch.yml`）逐份补行，校验脚本对"随包预设没被覆盖"直接 FAIL：上游以后再加预设，漏掉会当场失败，不再静默失效。
+- 覆盖块刷新改为"**按随包内容重建、再合并你手工加的行**"：随包新增的行（如 `time-context`、`tool-schedule`）会补上；你在预设里手工追加的行（如 `tool-ralph`、`tool-subagent-*`）不会被冲掉；你自己调过的 `thresholdRatio` / `retainRatio` 一律保留。
+
+**不变**
+
+- 工具行为、参数、界面均未改动。装完仍需重启 `dsh`（宿主组成变了），重启后新建的对话立刻生效。
+
+### 0.9.0 — 2026-09-24
+
+**只兼容 DSH ≥ 0.1.7-alpha.2；0.1.5 / 0.1.6 上请勿安装这一版。**
+
+**变更**
+
+- 跟随上游的设置模型改造（提交 `601d6761e4`）。上游删掉了客户端服务 `settingsScope`（换成 `configForms` + `settingsSchema`），也删掉了 `SettingsProvider.register()` —— 设置表单改由**每个 profile 条目自己导出的 `Config`** 提供。本版把浏览器半边与宿主半边都迁了过去：六个字段、默认值与取值范围现在声明在 `client-host.js` 的 `Config` 里；用户在界面上改的值写进 profile 补丁的 `config:` 段，再由插件同步到 preset 文件。
+- **0.1.5 / 0.1.6 上装这一版会让整个 Web 界面打不开**（浏览器半边声明的 `configForms` 永远等不到，该条目一直 pending，拖垮整棵客户端插件树）。这两版在 `dsh.compatibility` 里已标为 `incompatible`。
+- 表单默认值取 preset 文件里的**现值**：界面一打开显示的就是真正生效的值；没在界面上改过的字段不会被写回 preset，**手改 preset 文件仍然作数**。
+
+**不变**
+
+- `compact_agents` 工具、对话区的压缩提示、回合结束预压、被输出上限截断后的自动续写，都不受这次改造影响。
 
 ### 0.8.5 — 2026-09-20
 

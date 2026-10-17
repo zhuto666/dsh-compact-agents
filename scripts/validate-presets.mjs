@@ -16,6 +16,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs, resolveDshCheckout } from './lib/presets.mjs'
+import { listShippedPresets } from './lib/preset-overrides.mjs'
 
 // 本项目刻意不装依赖（离线、零安装）：js-yaml 与 cordis 一样从 DSH 检出里借。
 // 检出位置靠自描述探测（--dsh / $DSH_CHECKOUT / 既有联接 / profile），不写死盘符。
@@ -35,39 +36,101 @@ const presets = options.presets.length > 0 ? options.presets : discoverPresets()
 
 let failed = 0
 let checked = 0
+/**
+ * 一份文件里所有 preset 声明。
+ *
+ * 形态有两代：老的是独立 preset 文件（顶层就是 plugins 列表）；0.1.7 起是内联在 profile 补丁里的
+ * `insert: [ - id: preset-<name> ]`，以及用户层对随包 preset 的整份覆盖（`- id: preset-ptc` +
+ * 完整 `config.plugins`）。两代都要能认，否则 profile 补丁会被整体 SKIP —— 那正是 2026-09-24
+ * 「压缩与自动续写不生效」一直没被守卫发现的原因（当时它打印 ALL OK (0 preset mounted)）。
+ *
+ * @param doc - 已解析的 YAML 文档。
+ * @returns {label, plugins} 列表。
+ */
+function collectPresets(doc) {
+  const found = []
+  const visit = (rows) => {
+    if (!Array.isArray(rows)) return
+    for (const row of rows) {
+      if (row === null || typeof row !== 'object') continue
+      if (Array.isArray(row.plugins)) found.push({ label: String(row.id ?? row.config?.id ?? '?'), plugins: row.plugins })
+      else if (Array.isArray(row.config?.plugins)) found.push({ label: String(row.id ?? row.config?.id ?? '?'), plugins: row.config.plugins })
+      if (Array.isArray(row.insert)) visit(row.insert)
+    }
+  }
+  // 老形态：顶层就是插件列表（preset 自己的 agent.cordis.yml）。
+  const looksLikePluginList = Array.isArray(doc)
+    && doc.some(row => row?.id === 'compaction' && Array.isArray(row?.config))
+    && !doc.some(row => Array.isArray(row?.plugins) || Array.isArray(row?.config?.plugins))
+  if (looksLikePluginList) found.push({ label: '(top-level)', plugins: doc })
+  else visit(doc)
+  return found
+}
+
 for (const file of presets) {
-  const label = file.replace(`${DSH_HOME}\\`, '').replace(`${DSH_HOME}/`, '')
+  const label = file.replace(DSH_HOME + '\\', '').replace(DSH_HOME + '/', '')
   try {
     const doc = yaml.load(fs.readFileSync(file, 'utf8'), { schema })
     if (!Array.isArray(doc)) throw new Error('顶层不是列表')
-    const group = doc.find(row => row?.id === 'compaction')
-    if (group === undefined) {
-      console.log(`SKIP ${label} (没有 compaction 组 —— 该 preset 不压缩，正常)`)
-      continue
+    const declarations = collectPresets(doc)
+    if (declarations.length === 0) throw new Error('文件里找不到 preset 声明（没有 plugins 列表）')
+    const shipped = file.includes(path.sep + 'node_modules' + path.sep)
+    for (const preset of declarations) {
+      const group = preset.plugins.find(row => row?.id === 'compaction')
+      if (group === undefined) {
+        console.log('SKIP ' + label + ' :: ' + preset.label + ' (没有 compaction 组 —— 该 preset 不压缩，正常)')
+        continue
+      }
+      if (!Array.isArray(group.config)) throw new Error(preset.label + ': compaction.config 不是列表')
+      const mine = group.config.find(row => row?.id === ROW_ID)
+      if (mine === undefined) {
+        // 随包发行的 preset（@linxin666/*/presets/）被它自己的插件升级重写时会丢掉我们这行；
+        // DSH 内置 preset（ptc 等）必须靠 profile 补丁整份覆盖，随包文件不许直接改。
+        throw new Error(shipped
+          ? preset.label + ': ' + ROW_ID + ' 行被发行包重写掉了（这个 preset 随 @linxin666/* 包发行）—— 重跑 node scripts/install.mjs 补回'
+          : preset.label + ': compaction 组内缺少 ' + ROW_ID + ' 行 —— 重跑 node scripts/install.mjs 补回')
+      }
+      // 行名两种写法都要认：0.1.7 迁移后本机用 `file://` URL（见 2026-09-23 的 file-url 修正），
+      // 旧安装与脚本写的是普通绝对路径。
+      const entryPath = /^file:\/\//i.test(mine.name) ? fileURLToPath(mine.name) : mine.name
+      if (!fs.existsSync(entryPath)) throw new Error(preset.label + ': 引用的文件不存在: ' + mine.name)
+      if (entryPath.replace(/\\/g, '/') !== PLUGIN_ENTRY) throw new Error(preset.label + ': 引用的不是本项目入口: ' + mine.name)
+      const basic = group.config.find(row => row?.id === 'compaction-basic')
+      checked += 1
+      console.log(label + ' :: ' + preset.label)
+      console.log('  rows           = ' + group.config.map(row => row?.id).join(','))
+      console.log('  thresholdRatio = ' + basic?.config?.thresholdRatio + '  retainRatio = ' + basic?.config?.retainRatio)
+      console.log('  ' + ROW_ID + ' -> ' + mine.name + ' (存在)')
     }
-    if (!Array.isArray(group.config)) throw new Error('compaction.config 不是列表')
-    const mine = group.config.find(row => row?.id === ROW_ID)
-    if (mine === undefined) {
-      // 随包发行的 preset（`@linxin666/*/presets/`）被它自己的插件升级重写时会丢掉我们这行 ——
-      // 用户自建的 preset 一般不会自己消失。两者都算失败，但修法要说清楚。
-      const shipped = file.includes(`${path.sep}node_modules${path.sep}`)
-      throw new Error(shipped
-        ? `${ROW_ID} 行被发行包重写掉了（这个 preset 随 @linxin666/* 包发行）—— 重跑 node scripts/install.mjs 补回`
-        : `compaction 组内缺少 ${ROW_ID} 行 —— 重跑 node scripts/install.mjs 补回`)
-    }
-    if (!fs.existsSync(mine.name)) throw new Error(`引用的文件不存在: ${mine.name}`)
-    if (mine.name.replace(/\\/g, '/') !== PLUGIN_ENTRY) {
-      throw new Error(`引用的不是本项目入口: ${mine.name}`)
-    }
-    const basic = group.config.find(row => row?.id === 'compaction-basic')
-    checked += 1
-    console.log(label)
-    console.log(`  rows           = ${group.config.map(row => row?.id).join(',')}`)
-    console.log(`  thresholdRatio = ${basic?.config?.thresholdRatio}  retainRatio = ${basic?.config?.retainRatio}`)
-    console.log(`  ${ROW_ID} -> ${mine.name} (存在)`)
   } catch (error) {
     failed += 1
-    console.log(`FAIL ${label}: ${error.message}`)
+    console.log('FAIL ' + label + ': ' + error.message)
+  }
+}
+
+// ── 随包 preset 的覆盖完整性 ───────────────────────────────────────────
+// 0.2.1-alpha.3 新增了 cordis 并把它设成新建会话的默认预设。只覆盖部分 preset 时，
+// 选到未覆盖那份的会话会**静默**失去整个插件（工具 / 压缩播报 / 自动续写 / 预压），
+// 而且 profile 里看不出任何异常 —— 2026-10-16 用户报「功能失效」就是这个。
+// 所以这里把"随包有、profile 没覆盖"变成显式 FAIL，而不是等下一份新 preset 再漏一次。
+if (options.presets.length === 0) {
+  const declared = new Set()
+  for (const file of presets) {
+    try {
+      const doc = yaml.load(fs.readFileSync(file, 'utf8'), { schema })
+      for (const preset of collectPresets(doc)) {
+        declared.add(String(preset.label))
+        declared.add(String(preset.label).replace(/^preset-/, ''))
+      }
+    } catch {
+      // 上面的遍历已经就同一份文件报过 FAIL，这里不重复计数。
+    }
+  }
+  for (const preset of listShippedPresets(DSH_CHECKOUT)) {
+    if (declared.has(preset.name) || declared.has(preset.rowId)) continue
+    failed += 1
+    console.log('FAIL preset-' + preset.name + ': 随包 preset 没有被 profile 覆盖 —— 选到该预设的会话没有 '
+      + ROW_ID + ' 行；重跑 node scripts/install.mjs')
   }
 }
 

@@ -34,8 +34,20 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DSH_HOME, discoverPresets } from './scripts/lib/presets.mjs'
 
-/** 设置界面里的命名空间；浏览器 half 必须用同一个字符串注册卡片。 */
+/** 设置界面里的命名空间；浏览器 half 用它认领老设置页那张卡片（`settings.plugin.item` 的 key）。 */
 export const SETTINGS_NAMESPACE = 'compact-agents'
+
+/**
+ * profile 组成里那一行的 entry id —— 0.1.7 起设置表单按它认领。
+ *
+ * 上游 601d6761e4 把设置模型换成了"宿主读 entry 自己的 Config"：
+ * `packages/settings/settings/src/index.ts` 的 `describe()` 拿 `entry.options.id` 当命名空间
+ * （`ns: entry.options.id`）、拿 `entry.fiber.runtime.Config` 当表单 schema
+ * （`private schema(entry)` → `entry.fiber?.runtime?.Config`），而浏览器半边收到的正是这个 id。
+ * 所以 `lib/client.js` 里 `ctx.configForms.get()` 的实参必须与 `cordis.patch.yml` 那一行的
+ * `id:` 逐字一致 —— 它与 {@link SETTINGS_NAMESPACE} 是**两个不同的字符串**，别混。
+ */
+export const ENTRY_ID = 'compact-agents-client-host'
 
 /** 命名空间的字段说明（同时是文档与测试的单一来源）。 */
 export const SETTINGS_FIELDS = Object.freeze({
@@ -68,12 +80,6 @@ export const liveConfig = {
   preemptiveRatio: null,
 }
 
-/** 本进程唯一那次注册用的作文层；用来判断某个值到底是不是"用户改过"。 */
-let registeredBase = null
-
-/** 进程级唯一的 settings scope；换代时复用它，避免重复注册抛错。 */
-let registeredScope = null
-
 /** 上次写进 preset 的值，用来判断某个字段是否真的需要落盘。 */
 let appliedPresetValues = null
 
@@ -104,6 +110,7 @@ function presetFiles() {
 export function setPresetFilesForTest(files) {
   presetFilesOverride = files
   presetValuesCache = null
+  seedCache = null
 }
 
 /** `maxAutoContinues` 的默认值：连续截断时最多自动续写两次。 */
@@ -158,12 +165,13 @@ export function resolveMaxAutoContinues(config) {
  *
  * @param lines - 文件按行切开的结果。
  * @param rowId - 目标 row 的 id。
+ * @param from - 从哪一行开始找；同一文件里可能有多个同名 row，逐个处理时要往后递。
  * @returns 行号与该块的缩进；找不到 row 或 row 里没有 `config:` 时为 null。
  */
-function locateRowConfig(lines, rowId) {
+function locateRowConfig(lines, rowId, from = 0) {
   const rowPattern = new RegExp(`^(\\s*)-\\s*id:\\s*${rowId}\\s*$`)
   let rowLine = -1
-  for (let i = 0; i < lines.length; i += 1) {
+  for (let i = from; i < lines.length; i += 1) {
     if (rowPattern.test(lines[i])) {
       rowLine = i
       break
@@ -318,23 +326,40 @@ function refreshComment(key, value, tail) {
  * @returns 是否发生了修改。
  */
 export function setKeyInRow(lines, rowId, key, value) {
-  const located = locateRowConfig(lines, rowId)
-  if (located === null) return false
-  const childIndent = ' '.repeat(located.configIndent + 2)
-  for (let i = located.configLine + 1; i < located.end; i += 1) {
-    const match = /^(\s*)([A-Za-z0-9_-]+):(.*)$/.exec(lines[i])
-    if (match === null) continue
-    if (match[1].length <= located.configIndent) break
-    if (match[2] !== key) continue
-    // 值后面的尾巴：对齐空白 + 行内注释；没有注释时是空串或行尾空白。
-    const { tail } = splitScalar(match[3])
-    const next = `${match[1]}${key}: ${value}${refreshComment(key, value, tail)}`
-    if (next === lines[i]) return false
-    lines[i] = next
-    return true
+  let changed = false
+  let from = 0
+  // 同一个 row id 在一个文件里可能出现多次：0.1.7 起多个 preset 的声明内联在同一个 profile
+  // 补丁里（每个 preset 的 plugins 数组各带一份 `compaction-basic`），而"改阈值"的语义是
+  // **所有**挂载它的 preset 一起改 —— 只改第一个会让其余预设静默停在旧值。
+  while (from < lines.length) {
+    const located = locateRowConfig(lines, rowId, from)
+    if (located === null) break
+    const childIndent = ' '.repeat(located.configIndent + 2)
+    let hit = false
+    for (let i = located.configLine + 1; i < located.end; i += 1) {
+      const match = /^(\s*)([A-Za-z0-9_-]+):(.*)$/.exec(lines[i])
+      if (match === null) continue
+      if (match[1].length <= located.configIndent) break
+      if (match[2] !== key) continue
+      // 值后面的尾巴：对齐空白 + 行内注释；没有注释时是空串或行尾空白。
+      const { tail } = splitScalar(match[3])
+      const next = `${match[1]}${key}: ${value}${refreshComment(key, value, tail)}`
+      if (next !== lines[i]) {
+        lines[i] = next
+        changed = true
+      }
+      hit = true
+      break
+    }
+    if (!hit) {
+      lines.splice(located.configLine + 1, 0, `${childIndent}${key}: ${value}`)
+      changed = true
+      from = located.end + 1
+      continue
+    }
+    from = located.end
   }
-  lines.splice(located.configLine + 1, 0, `${childIndent}${key}: ${value}`)
-  return true
+  return changed
 }
 
 /**
@@ -366,6 +391,41 @@ export function readPresetValues(files) {
     }
   }
   return { values, problems }
+}
+
+/** {@link seedConfigDefaults} 的一次性结果：`Config` 的默认值与 `apply()` 的锚点必须同源。 */
+let seedCache = null
+
+/**
+ * 设置表单六个字段的默认值 —— 也是判断"用户改过没有"的作文层锚点。
+ *
+ * `Config` 必须在**模块加载时**就给出静态默认值，而"真正生效的值"在 preset 文件里
+ * （用户可能直接编辑过）。所以这里同步读一次文件、拿它当默认值：界面一打开显示的就是
+ * 生效值；而用户没动过的字段在 {@link registerSettings} 里与本函数的返回值相等，
+ * 于是不会被无谓地写回 preset —— 这是"不覆盖用户手改"的唯一防线。
+ *
+ * 结果缓存到进程结束：`client-host.js` 的 `Config` 与 `apply()` 里的锚点必须是同一次读取，
+ * 否则两次之间文件一变就会被误判成"用户改过"。
+ *
+ * @returns 六个字段的默认值；preset 读不到时给保守默认。
+ */
+export function seedConfigDefaults() {
+  if (seedCache !== null) return seedCache
+  let preset = {}
+  try {
+    preset = readPresetValues(presetFiles()).values
+  } catch {
+    preset = {}
+  }
+  seedCache = {
+    notice: true,
+    maxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES,
+    preemptiveRatio: DEFAULT_PREEMPTIVE_RATIO,
+    thresholdRatio: preset.thresholdRatio ?? 0.35,
+    retainRatio: preset.retainRatio ?? 0.05,
+    bootstrapMaxTokens: preset.bootstrapMaxTokens ?? 16384,
+  }
+  return seedCache
 }
 
 /**
@@ -481,18 +541,107 @@ export function writePresetValues(values, files) {
 }
 
 /**
+ * 解开 volatile 引用：0.1.7 起 `.volatile()` 字段进 `apply()` 时是 **`Volatile` 对象**
+ * （`typeof` 是 `'object'`，真值要 `.get()` 取），不是标量。按标量用它就会静默失效 ——
+ * 比较恒"不等"、`typeof === 'number'` 恒 false、落盘永不发生（2026-09-24 实测）。
+ *
+ * @param value - 行配置里的一个字段值。
+ * @returns 真实值；标量字段原样返回。
+ */
+export function plainValue(value) {
+  return value !== null && typeof value === 'object' && typeof value.get === 'function'
+    ? value.get()
+    : value
+}
+
+/**
+ * 把行配置折成六个标量字段。
+ *
+ * @param config - 行配置（可能带 `Volatile` 引用，也可能只写了被覆盖的字段）。
+ * @returns 只含已知字段的普通对象；缺的字段是 `undefined`（＝没被覆盖）。
+ */
+export function plainRowConfig(config) {
+  const out = {}
+  if (config === null || typeof config !== 'object') return out
+  for (const key of Object.keys(SETTINGS_FIELDS)) out[key] = plainValue(config[key])
+  return out
+}
+
+/**
+ * 读**当前**行配置 —— 不依赖 `apply()` 重跑。
+ *
+ * 上游 `601d6761e4` 的 volatile 契约是"就地更新、不重挂插件"
+ * （`packages/settings/settings/tests/configuration.spec.ts:9` 原话
+ * "updates the real consumer without remounting"），所以 `apply()` 里那次
+ * `registerSettings` 拿到的永远是**启动那一刻**的值；设置界面保存后的新值只能现读：
+ * `configEditor.entries()` 的 `entry.options.config` 就是宿主落盘的那份行配置（标量）。
+ *
+ * @param ctx - 带 `configEditor` 服务的上下文；旧版没有该服务时返回 undefined。
+ * @returns 六个标量字段；读不到时 undefined。
+ */
+function readLiveRowConfig(ctx) {
+  try {
+    const editor = typeof ctx?.get === 'function' ? ctx.get('configEditor') : undefined
+    if (editor === undefined || typeof editor.entries !== 'function') return undefined
+    const entry = editor.entries().find(row => row.options?.id === ENTRY_ID)
+    if (entry === undefined) return undefined
+    return plainRowConfig(entry.options?.config)
+  } catch {
+    return undefined
+  }
+}
+
+/** 已经装过监听的挂载上下文 —— 重复调用不叠加监听。 */
+const watchedConfigs = new WeakSet()
+
+/**
+ * 盯着行配置的变化，读到新值就再应用一次。
+ *
+ * 触发点是 DSH 既有的两个事件：`app-boot/config-reload`（每次 profile 补丁 reconcile 之后，
+ * 见 packages/boot/app-boot/src/index.ts:298）与 `settings/document-updated`。两者都只是
+ * "可能变了"的信号，真正的值现读一次行配置；没变时 {@link applySettings} 自己早退。
+ *
+ * @param ctx - 挂载上下文。
+ * @param anchor - 作文层锚点。
+ */
+function watchLiveRowConfig(ctx, anchor) {
+  if (typeof ctx?.on !== 'function' || watchedConfigs.has(ctx)) return
+  watchedConfigs.add(ctx)
+  const refresh = () => {
+    const live = readLiveRowConfig(ctx)
+    if (live === undefined) return
+    try {
+      applySettings(ctx, live, anchor)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        ctx.logger.warn(`compact-agents: 应用设置变化失败: ${message}`)
+      } catch {
+        // 桩上下文没有 logger。
+      }
+    }
+  }
+  ctx.on('app-boot/config-reload', refresh)
+  ctx.on('settings/document-updated', (namespace) => {
+    if (namespace === ENTRY_ID || namespace === SETTINGS_NAMESPACE) refresh()
+  })
+}
+
+/**
  * 把解出来的设置应用到插件：**用户改过的**自身旋钮进 `liveConfig`，preset 参数落盘。
  *
  * "改过"是拿解析结果和作文层比对得出的：相等说明用户没动过这一项，就该让各挂载的行配置
  * 说话（`liveConfig` 保持 null）。
  *
  * @param ctx - registrant context carrying the logger.
- * @param next - 命名空间解析后的值。
- * @param previous - 上一次的值；首轮为 undefined（此时不写盘）。
+ * @param next - 行配置解析后的值。
+ * @param anchor - 作文层锚点（{@link seedConfigDefaults} 的结果）；省略时按空对象算。
  */
-function applySettings(ctx, next, previous) {
-  const base = registeredBase ?? {}
-  liveConfig.notice = next.notice === base.notice ? null : next.notice !== false
+function applySettings(ctx, next, anchor) {
+  const base = anchor ?? {}
+  liveConfig.notice = next.notice === base.notice || next.notice === undefined
+    ? null
+    : next.notice !== false
   liveConfig.maxAutoContinues = next.maxAutoContinues === base.maxAutoContinues
     || typeof next.maxAutoContinues !== 'number'
     ? null
@@ -501,10 +650,14 @@ function applySettings(ctx, next, previous) {
     || typeof next.preemptiveRatio !== 'number'
     ? null
     : next.preemptiveRatio
-  if (previous === undefined) return
+  // 落盘底数取**文件现值**，不是启动那一刻的 seed：seed 是冻结的，用户把旋钮改回启动时的原值
+  // 会被当成"没改过"而静默不写 —— 界面显示回去了、preset（新会话读的那份）却停在旧值。
+  // "不覆盖手改 preset" 的防线仍在别处：表单只把**用户真在界面上存过的字段**写进行配置，
+  // 没存过的是 undefined，下面那个 typeof 判定直接跳过。
+  const baseline = currentPresetValues()
   const wanted = {}
   for (const key of Object.keys(PRESET_KEYS)) {
-    if (typeof next[key] === 'number' && next[key] !== previous[key]) wanted[key] = next[key]
+    if (typeof next[key] === 'number' && next[key] !== baseline[key]) wanted[key] = next[key]
   }
   if (Object.keys(wanted).length === 0) return
   const report = writePresetValues(wanted, presetFiles())
@@ -521,109 +674,63 @@ function applySettings(ctx, next, previous) {
 }
 
 /**
- * 注册设置命名空间。
+ * 应用一次行配置 —— 0.1.7 起这就是设置面的全部。
  *
- * 一整块都是"有就用、没有就算了"：拿不到 settings 服务（精简上下文、测试桩）、
- * 或者 schemastery 联接没建好（旧安装），都只记一条 warn，绝不让插件挂掉。
- * 身份只注册一次 —— 见模块头"注册为什么是进程级一次"。
+ * 上游 601d6761e4 删掉了 `SettingsProvider.register()`：设置表单不再由插件往宿主推命名空间，
+ * 而是**宿主直接读 entry 自己导出的 `Config`**（`packages/settings/settings/src/index.ts` 的
+ * `describe()`：`ns = entry.options.id`、`schema = entry.fiber.runtime.Config`）。于是这里
+ * 不再注册任何东西 —— 表单的读写在宿主手里，插件只剩一件事：把行配置同步到它真正生效的地方
+ * （自身旋钮进 `liveConfig`，压缩参数落 preset 文件）。
  *
- * **服务可能还没就绪**：本包在宿主组成里是一个 bundle 行，它完全可能早于提供 `settings`
- * 的那一层被 apply（compose 顺序由 profile 的 bundles 顺序决定）。所以这里不是"取一次、
- * 取不到就算了"，而是用 `ctx.inject` 等它出现 —— 否则表现就是"设置页里什么都没有"，
- * 且没有任何报错。
+ * 触发时机有两处：① `apply()` 本身（cordis 在 entry 的 config 变化时会 dispose + 重挂，
+ * `vendor/cordis/src/fiber.ts` 的 `update()` → `_reload()`）；② 0.1.7 起表单字段是
+ * `.volatile()` 的，**保存不重挂插件**（`settings/tests/configuration.spec.ts:9` 原话
+ * "updates the real consumer without remounting"），所以新值只能靠
+ * {@link watchLiveRowConfig} 订阅事件现读 —— 光等 `apply()` 重跑是等不到的。
  *
- * @param ctx - registrant context carrying the settings service and logger.
+ * 一整块「有就用、没有就算了」：没有 logger 的桩上下文、preset 读不到，都只记一条 warn，
+ * 绝不让插件挂掉。
+ *
+ * @param ctx - registrant context carrying the logger.
  * @param config - 行配置；`settings: false` 可关掉整个设置面。
- * @returns 注册完成后 resolve；任何一步失败都不会 reject。
+ * @param anchor - 这一行的"作文层"。`liveConfig` 里 null 的含义是"没被覆盖、按各挂载自己的
+ *   行配置走"，所以比对基准必须是**本行**配置解析出的值：profile 那一行（`client-host.js`）
+ *   没有额外旋钮 —— 它的字段就是表单本身 —— 省略此参即可；preset 行（`index.js`）则传
+ *   它自己的行配置，否则某一行设的 `maxAutoContinues: 5` 会被当成全局覆盖、污染其它行。
+ * @returns 总是 resolve；任何一步失败都不会 reject。
  */
-export function registerSettings(ctx, config) {
+export function registerSettings(ctx, config, anchor) {
   if (config?.settings === false) return Promise.resolve()
-  if (registeredScope !== null) {
-    // 换代复用：把当前值重新灌进本次挂载的 liveConfig（模块级，其实已经是同一份）。
-    if (typeof ctx.get === 'function' && ctx.get('settings') !== undefined) {
-      applySettings(ctx, registeredScope.get(), undefined)
+  try {
+    const seed = seedConfigDefaults()
+    // "上一次"取与 `Config` 默认值同源的那三个 preset 参数：用户没动过的字段必然与它相等，
+    // 于是只有真正改过的值才落盘 —— 这是"不覆盖手改 preset"的唯一防线。
+    // 它同时是热同步广播的底数（`index.js` 拿它跟运行中会话的实际值比对）。
+    const previous = {
+      thresholdRatio: seed.thresholdRatio,
+      retainRatio: seed.retainRatio,
+      bootstrapMaxTokens: seed.bootstrapMaxTokens,
     }
-    return Promise.resolve()
-  }
-  // 让 settings 服务到场后再注册；服务被替换时回调会再跑一次，靠上面的缓存幂等。
-  if (typeof ctx.inject === 'function') {
-    return new Promise((resolve) => {
-      ctx.inject(['settings'], (settingsCtx) => {
-        void doRegister(settingsCtx, config).then(resolve, resolve)
-      })
-    })
-  }
-  return doRegister(ctx, config)
-}
-
-/**
- * 真正执行注册；`registerSettings` 负责"什么时候可以注册"。
- * @param ctx - context carrying the settings service and logger.
- * @param config - 行配置。
- * @returns 注册完成后 resolve；失败只记 warn。
- */
-async function doRegister(ctx, config) {
-  if (registeredScope !== null) return
-  if (typeof ctx.get !== 'function') return
-  let provider
-  try {
-    provider = ctx.get('settings')
-  } catch {
-    return
-  }
-  if (provider === undefined || typeof provider.register !== 'function') return
-  let z
-  try {
-    ({ default: z } = await import('@deepseek-ai/schemastery'))
+    appliedPresetValues = previous
+    applySettings(ctx, plainRowConfig(config), anchor ?? seed)
+    // 只有宿主那一行（不传锚点）负责盯变化：preset 行传了锚点，它的行配置是"本代 mount 那一刻
+    // 的旋钮"，不该由它改写 liveConfig；而保存后的新值只有宿主那一行读得到。
+    if (anchor === undefined) watchLiveRowConfig(ctx, seed)
   } catch (error) {
-    ctx.logger.warn(`compact-agents: 设置面未启用（解析不到 @deepseek-ai/schemastery，重新跑一次安装脚本可修复）: ${error.message}`)
-    return
-  }
-  const { values } = readPresetValues(presetFiles())
-  const base = {
-    notice: config?.notice !== false,
-    maxAutoContinues: resolveMaxAutoContinues(config),
-    preemptiveRatio: resolvePreemptiveRatio(config),
-    ...values,
-  }
-  const schema = z.object({
-    notice: z.boolean().default(true),
-    maxAutoContinues: z.number().step(1).min(0).max(10).default(2),
-    preemptiveRatio: z.number().min(0).max(1).default(DEFAULT_PREEMPTIVE_RATIO),
-    thresholdRatio: z.number().min(0.05).max(0.95).default(0.35),
-    retainRatio: z.number().min(0.01).max(0.5).default(0.05),
-    bootstrapMaxTokens: z.number().step(1).min(1024).max(200000).default(16384),
-  })
-  try {
-    // base = 作文层：本插件行配置的两个旋钮 + preset 文件里的现值。于是设置界面显示的
-    // 就是"真正生效的值"（不是插件凭空给的默认值），而"已覆盖"标记来自 settings 的用户层。
-    // applies 取保守的 'restart'：其中三项要等新会话才生效（卡片上逐项说明）。
-    registeredScope = provider.register(SETTINGS_NAMESPACE, schema, {
-      base,
-      applies: 'restart',
-    })
-  } catch (error) {
-    ctx.logger.warn(`compact-agents: 设置命名空间注册失败: ${error.message}`)
-    return
-  }
-  registeredBase = base
-  appliedPresetValues = { ...values }
-  applySettings(ctx, registeredScope.get(), undefined)
-  registeredScope.watch(next => {
+    const message = error instanceof Error ? error.message : String(error)
     try {
-      applySettings(ctx, next, appliedPresetValues ?? undefined)
-    } catch (error) {
-      ctx.logger.warn(`compact-agents: 应用设置失败: ${error.message}`)
+      ctx.logger.warn(`compact-agents: 应用行配置失败: ${message}`)
+    } catch {
+      // 连 logger 都没有的桩上下文：没有可报的地方。
     }
-  })
-  ctx.logger.info(`compact-agents: 设置面已注册（命名空间 ${SETTINGS_NAMESPACE}，${path.relative(DSH_HOME, presetFiles()[0] ?? '')} 等 preset 可改）`)
+  }
+  return Promise.resolve()
 }
 
 /** 仅供测试：清掉进程级注册状态。 */
 export function resetSettingsStateForTest() {
-  registeredScope = null
-  registeredBase = null
   appliedPresetValues = null
+  seedCache = null
   presetValuesCache = null
   liveConfig.notice = null
   liveConfig.maxAutoContinues = null

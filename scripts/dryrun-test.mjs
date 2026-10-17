@@ -67,6 +67,15 @@ fs.writeFileSync(presetFile, [
   // 挂载行必须指向**副本的**项目根：`unpatchPreset` 只移除指向本项目的行，
   // 写成真实仓库路径时它会正确地 SKIP（那正是这条断言第一版失败的原因）。
   `      name: '${repoRoot.replace(/\\/g, '/')}/index.js'`,
+  // 第二个 compaction 组：一个 profile 补丁里多份 preset 时每份各有一行，
+  // 卸载必须全删（早期版本只删第一个匹配，剩下的一直留着）。
+  '- id: compaction-extra',
+  '  name: cordis:group',
+  '  config:',
+  '    - id: compaction-basic',
+  '      name: ./basics.mjs',
+  '    - id: compact-agents',
+  `      name: '${repoRoot.replace(/\\/g, '/')}/index.js'`,
   '',
 ].join('\n'))
 const profileManifest = path.join(profileDir, 'package.json')
@@ -101,6 +110,8 @@ check('the preview reports what it *would* remove rather than claiming to have r
   (preview.stdout.split('\n').find(line => line.includes('remove')) ?? '').trim())
 check('the preview leaves the preset mount row alone',
   fs.readFileSync(presetFile, 'utf8') === before.get(presetFile))
+check('the preview counts every mount row, not just the first',
+  preview.stdout.includes('2 row(s)'), (preview.stdout.split('\n').find(line => line.includes('row(s)')) ?? '').trim())
 check('the preview leaves the profile bundle list alone',
   fs.readFileSync(profileManifest, 'utf8') === before.get(profileManifest))
 check('no backup files are written by a preview',

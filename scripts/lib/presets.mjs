@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 本项目根目录（本文件在 scripts/lib/ 下）。 */
 export const PROJECT_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
@@ -15,8 +15,13 @@ export const PROJECT_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath
 /** DSH 的 home（`~/.dsh`，可用 DSH_HOME 覆盖）。 */
 export const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
 
-/** 插件入口的绝对路径（正斜杠）—— preset 行里写的就应该是它。 */
+/** 插件入口的绝对路径（正斜杠）—— 只用于本地文件比较，不要直接写进 preset 行。 */
 export const PLUGIN_ENTRY = path.join(PROJECT_ROOT, 'index.js').split(path.sep).join('/')
+
+//update-begin---author:admin ---date:2026-10-17  for：【bug】preset 行必须写 file:// URL：preset 子树走 EntryTree.import，Windows 裸盘符 E:/... 会被 Node 当成 e: 协议，报 ERR_UNSUPPORTED_ESM_URL_SCHEME，表现为「compact-agents (...): never started」、新建会话失败-----------
+/** 插进 preset 行的插件入口 URL —— DSH profile 补丁里的 preset 行应该写它。 */
+export const PLUGIN_ENTRY_URL = pathToFileURL(PLUGIN_ENTRY).href
+//update-end---author:admin ---date:2026-10-17  for：【bug】-----------
 
 /** preset 挂载行使用的行 id。 */
 export const ROW_ID = 'compact-agents'
@@ -133,7 +138,29 @@ export function resolveDshCheckout(explicit) {
 }
 
 /**
- * 列出默认要处理的 preset 文件：
+ * 一个文件里有没有指定 id 的插件行 —— 用来判断 profile 补丁是不是 0.1.7 那种
+ * "preset 声明写在 YAML 里"的形态（那时 `- id: compaction-basic` 会作为插件行出现在补丁中）。
+ * @param file - 待检查的文件。
+ * @param rowId - 目标行 id。
+ * @returns 命中则为 true；读不了也算 false。
+ */
+function declaresRow(file, rowId) {
+  try {
+    return new RegExp(`^\\s*-\\s*id:\\s*${rowId}\\s*$`, 'm').test(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 列出默认要处理的 preset 文件。
+ *
+ * **0.1.7 起位置变了**：上游 `d1e22a7e24`（#4569）删掉了 `@deepseek-ai/dsh-agent-presets` 的目录
+ * 扫描，preset 声明搬进 profile 的 `cordis.patch.yml` —— 那里才是权威位置，也是读写都要落的地方。
+ * 找到就**只用它**：旧位置的同名文件已经不被 DSH 读取，继续读写它们只会改到一份没人看的文件，
+ * 让"在设置界面改压缩参数"这件事静默失效。
+ *
+ * 补丁里找不到相关行时才回退到旧位置，覆盖 0.1.6 及更早的安装：
  *   1. `$DSH_HOME/.agent-presets/<name>/agent.cordis.yml`（用户自建 preset）；
  *   2. `$DSH_HOME/profiles/<profile>/node_modules/@linxin666/<pkg>/presets/<name>/agent.cordis.yml`
  *      （发行版随 npm 包带进来的 preset）。
@@ -142,6 +169,17 @@ export function resolveDshCheckout(explicit) {
  * @returns 找到的 preset 文件路径列表（可能为空）。
  */
 export function discoverPresets() {
+  const current = []
+  const profilesDir = path.join(DSH_HOME, 'profiles')
+  if (fs.existsSync(profilesDir)) {
+    for (const profile of fs.readdirSync(profilesDir, { withFileTypes: true })) {
+      if (!profile.isDirectory()) continue
+      const patch = path.join(profilesDir, profile.name, 'cordis.patch.yml')
+      if (fs.existsSync(patch) && declaresRow(patch, 'compaction-basic')) current.push(patch)
+    }
+  }
+  if (current.length > 0) return current
+
   const found = []
   const userPresets = path.join(DSH_HOME, '.agent-presets')
   if (fs.existsSync(userPresets)) {

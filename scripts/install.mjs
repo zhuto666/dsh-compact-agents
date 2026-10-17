@@ -1,5 +1,5 @@
 /**
- * 一键安装 / 修复：建好两个 junction、往 preset 的 `compaction` 隔离组里追加挂载行、
+ * 一键安装 / 修复：建好 junction、给**每一份** preset（含随包新增的）补齐挂载行、
  * 把本包登记成 profile 的 bundle **与依赖**（后者决定新版插件页里能不能看见我们）。
  *
  * 幂等：已存在的东西原样跳过；重复运行安全。
@@ -18,7 +18,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets, resolveDshCheckout } from './lib/presets.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, PLUGIN_ENTRY_URL, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets, resolveDshCheckout } from './lib/presets.mjs'
+import {
+  DEFAULT_RETAIN_RATIO,
+  DEFAULT_THRESHOLD_RATIO,
+  ensureDeclaredRows,
+  listShippedPresets,
+  syncOverrides,
+} from './lib/preset-overrides.mjs'
 
 /** 解析命令行参数（比另两个脚本多一个 `--dsh`）。 */
 function parseArgs(argv) {
@@ -159,7 +166,9 @@ function registerProfileDependency(manifestPath, packageName, targetDir, dryRun)
  * @returns `{ok, detail}`；未尝试时 `ok === false` 且 detail 说明原因。
  */
 function tryOfficialInstall(packageDir, profile) {
-  const result = spawnSync('dsh', ['plugin', 'add', packageDir, '--profile', profile], {
+  // 0.2.1 起 `--profile` 必须写在被转发的 pnpm 参数之前，否则报 required option 未指定
+  // （docs/upgrade-guide/v0.2.1-alpha.1/plugin-option-placement）。
+  const result = spawnSync('dsh', ['plugin', '--profile', profile, 'add', packageDir], {
     encoding: 'utf8',
     shell: process.platform === 'win32',
     timeout: 300000,
@@ -283,13 +292,65 @@ console.log('  ' + ensureJunction(
   options.dryRun,
 ))
 
-const presets = options.presets.length > 0 ? options.presets : discoverPresets()
+// ── preset 覆盖：逐份，而不是"文件里第一个 compaction 组" ──────────────────────
+// 显式 --preset 仍走老的文件级补行（兼容 0.1.6 那种独立 agent.cordis.yml）。
+// 默认路径以检出里的随包 preset 为清单：每份都要有我们自己的 compaction 行，否则
+// 选到那份预设的会话就没有 compact_agents / 压缩播报 / 自动续写（0.2.1-alpha.3 新增的
+// cordis 还是新建会话的默认预设，漏掉它等于新开对话就"功能没了"）。
 console.log('')
-console.log(`presets (${presets.length}):`)
-if (presets.length === 0) {
-  console.log('  none found — pass --preset <agent.cordis.yml> explicitly')
+if (options.presets.length > 0) {
+  console.log(`presets (${options.presets.length}) [explicit]:`)
+  for (const file of options.presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
+} else {
+  const shipped = listShippedPresets(dsh)
+  const profilePatch = path.join(DSH_HOME, 'profiles', options.profile, 'cordis.patch.yml')
+  if (shipped.length === 0 || !fs.existsSync(profilePatch)) {
+    // 老版本 DSH（跟随包 preset 目录）或还没建 profile：回退到"逐个文件补行"。
+    const presets = discoverPresets()
+    console.log(`presets (${presets.length}) [legacy]:`)
+    if (presets.length === 0) console.log('  none found — pass --preset <agent.cordis.yml> explicitly')
+    for (const file of presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
+  } else {
+    const original = fs.readFileSync(profilePatch, 'utf8')
+    const shippedSet = new Set(shipped.map(preset => preset.name))
+    const synced = syncOverrides(original, shipped, {
+      //update-begin---author:admin ---date:2026-10-17  for：【bug】preset 行改写 file:// URL，避免 Windows 裸盘符被 Node 当成 e: 协议导致行 never started-----------
+      entry: PLUGIN_ENTRY_URL,
+      //update-end---author:admin ---date:2026-10-17  for：【bug】-----------
+      thresholdRatio: DEFAULT_THRESHOLD_RATIO,
+      retainRatio: DEFAULT_RETAIN_RATIO,
+      dryRun: options.dryRun,
+    })
+    console.log(`shipped presets (${shipped.length}):`)
+    for (const item of synced.report) {
+      console.log(`  ${item.action.padEnd(8)} ${item.name} — ${item.detail}`)
+    }
+    // 用户自建的 preset（梁神 / router-* 等）：只补缺失的行与阈值，不重建 config。
+    const declared = ensureDeclaredRows(synced.text, shippedSet, {
+      //update-begin---author:admin ---date:2026-10-17  for：【bug】同上：preset 行写 file:// URL-----------
+      entry: PLUGIN_ENTRY_URL,
+      //update-end---author:admin ---date:2026-10-17  for：【bug】-----------
+      thresholdRatio: DEFAULT_THRESHOLD_RATIO,
+      retainRatio: DEFAULT_RETAIN_RATIO,
+      dryRun: options.dryRun,
+    })
+    for (const item of declared.report) {
+      console.log(`  ${item.action.padEnd(8)} ${item.name} — ${item.detail} (用户自建)`)
+    }
+    if (declared.text === original) {
+      console.log('  ok       profile patch already up to date')
+    } else if (options.dryRun) {
+      console.log(`  would write ${profilePatch}`)
+    } else if (declared.text !== original) {
+      fs.writeFileSync(`${profilePatch}.bak-compact-agents`, original)
+      fs.writeFileSync(`${profilePatch}.tmp`, declared.text)
+      fs.renameSync(`${profilePatch}.tmp`, profilePatch)
+      console.log(`  wrote   ${profilePatch} (backup at .bak-compact-agents)`)
+    } else {
+      console.log('  ok       profile patch already up to date')
+    }
+  }
 }
-for (const file of presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
 
 // ── 宿主组成里的 bundle ──────────────────────────────────────────────────────
 // 浏览器 half（那张表单）**必须**靠宿主 Loader 的行才能被发现：

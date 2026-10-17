@@ -96,7 +96,18 @@ console.log(`DSH checkout: ${dsh}\n`)
 // 真实的文件型 settings provider，文件落在临时目录。
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'compact-agents-compose-'))
 const settingsFile = path.join(sandbox, 'settings.yaml')
-const providerUrl = pathToFileURL(path.join(dsh, 'packages/settings/settings-file/lib/index.js')).href
+const providerEntry = path.join(dsh, 'packages/settings/settings-file/lib/index.js')
+// 上游 601d6761e4 删掉了这个包（连同 `SettingsProvider.register()`）：本脚本赖以存在的
+// "真 FileSettingsProvider + 插件往宿主推命名空间"这条链路，在 0.1.7 里已经不存在了 ——
+// 设置表单改由 profile entry 自己导出的 `Config` 提供。找不到就干净退出：**被测对象没了，
+// 不是被测行为错了**。对应的新契约（Config + volatile + entry id 对齐）在 settings-test.mjs。
+if (!fs.existsSync(providerEntry)) {
+  console.log('SKIP compose-test — 上游已删除 packages/settings/settings-file（0.1.7 的设置模型改造）')
+  console.log('     本脚本测的「插件向宿主注册 settings 命名空间」这条链路不复存在；')
+  console.log('     现在的对应契约在 settings-test.mjs 第 6 段。')
+  process.exit(0)
+}
+const providerUrl = pathToFileURL(providerEntry).href
 const { default: FileSettingsProvider } = await import(providerUrl)
 check('the real FileSettingsProvider loads from the checkout', typeof FileSettingsProvider === 'function')
 

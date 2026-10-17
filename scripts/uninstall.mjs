@@ -11,7 +11,19 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, discoverPresets, parseCommonArgs } from './lib/presets.mjs'
+
+//update-begin---author:admin ---date:2026-10-17  for：【bug】preset 行现在写 file:// URL，比较前统一还原成文件路径-----------
+/** preset 行名可能是裸路径或 file:// URL，统一还原成文件路径再比较。 */
+function normalizeEntry(value) {
+  try {
+    return (/^file:\/\//i.test(value) ? fileURLToPath(value) : value).replace(/\\/g, '/')
+  } catch {
+    return value.replace(/\\/g, '/')
+  }
+}
+//update-end---author:admin ---date:2026-10-17  for：【bug】-----------
 
 /**
  * 删掉一个 preset 里的挂载行（行本身 + 属于它的续行）。
@@ -25,26 +37,45 @@ import { DSH_HOME, PLUGIN_ENTRY, PROJECT_ROOT, ROW_ID, discoverPresets, parseCom
 function unpatchPreset(file, dryRun, force) {
   const label = file.replace(`${DSH_HOME}${path.sep}`, '')
   const lines = fs.readFileSync(file, 'utf8').split('\n')
-  const index = lines.findIndex(line => new RegExp(`^\\s*-\\s*id:\\s*${ROW_ID}\\s*$`).test(line))
-  if (index === -1) return `ok       ${label} (no row)`
-  const target = /^\s*name:\s*'?([^'\n]+)'?\s*$/.exec(lines[index + 1] ?? '')?.[1]?.trim()
-  if (target !== undefined && target.replace(/\\/g, '/') !== PLUGIN_ENTRY && !force) {
-    return `SKIP     ${label} (points at ${target}, not this project — --force to remove anyway)`
+  const pattern = new RegExp(`^\\s*-\\s*id:\\s*${ROW_ID}\\s*$`)
+  const matches = []
+  for (let i = 0; i < lines.length; i += 1) if (pattern.test(lines[i])) matches.push(i)
+  if (matches.length === 0) return `ok       ${label} (no row)`
+  // 一个 profile 补丁里可以有**多份** preset（每份一个覆盖块，各有一行 compact-agents）。
+  // 早期版本只删第一个匹配 → 卸载后别的 preset 还挂着。这里倒序全删：索引不漂移，
+  // 跳过项（指向别的克隆）也不影响前面已算好的位置。
+  let removed = 0
+  let skipped = 0
+  for (let k = matches.length - 1; k >= 0; k -= 1) {
+    const index = matches[k]
+    const target = /^\s*name:\s*'?([^'\n]+)'?\s*$/.exec(lines[index + 1] ?? '')?.[1]?.trim()
+    //update-begin---author:admin ---date:2026-10-17  for：【bug】比较前把 file:// URL 还原成路径-----------
+    if (target !== undefined && normalizeEntry(target) !== normalizeEntry(PLUGIN_ENTRY) && !force) {
+    //update-end---author:admin ---date:2026-10-17  for：【bug】-----------
+      skipped += 1
+      continue
+    }
+    const indent = lines[index].length - lines[index].trimStart().length
+    let end = index + 1
+    while (end < lines.length) {
+      const line = lines[end]
+      const lineIndent = line.length - line.trimStart().length
+      if (line.trim() === '') break
+      if (lineIndent <= indent) break
+      end += 1
+    }
+    // 行前是空行、行后也是空行时，连尾部空行一起删，避免留下连续两个空行。
+    if (lines[index - 1]?.trim() === '' && lines[end]?.trim() === '') end += 1
+    lines.splice(index, end - index)
+    removed += 1
   }
-  const indent = lines[index].length - lines[index].trimStart().length
-  let end = index + 1
-  while (end < lines.length) {
-    const line = lines[end]
-    const lineIndent = line.length - line.trimStart().length
-    if (line.trim() === '') break
-    if (lineIndent <= indent) break
-    end += 1
+  if (removed === 0) {
+    return `SKIP     ${label} (${skipped} row(s) point elsewhere — --force to remove anyway)`
   }
-  // 行前是空行、行后也是空行时，连尾部空行一起删，避免留下连续两个空行。
-  if (lines[index - 1]?.trim() === '' && lines[end]?.trim() === '') end += 1
-  if (dryRun) return `remove   ${label} (lines ${index + 1}-${end})`
-  fs.writeFileSync(file, [...lines.slice(0, index), ...lines.slice(end)].join('\n'))
-  return `removed  ${label}`
+  const detail = `${removed} row(s)` + (skipped > 0 ? `, ${skipped} skipped` : '')
+  if (dryRun) return `remove   ${label} (${detail})`
+  fs.writeFileSync(file, lines.join('\n'))
+  return `removed  ${label} (${detail})`
 }
 
 /**
@@ -165,3 +196,6 @@ console.log('')
 console.log('done — 重启 dsh 后侧栏「插件」里不再有 dsh-compact-agents（旧版 dsh 是设置页那张卡片消失）；')
 console.log('       新开一条对话后 compact_agents 即不再出现；')
 console.log('       preset 与 profile package.json 的 .bak-compact-agents 备份未删除。')
+console.log('       注意：profile 补丁里由 install 生成的覆盖块（# ... (dsh-compact-agents) 注释那几段）只删了')
+console.log('       compact-agents 行，thresholdRatio 与你手工追加的插件行都还在；要完全回到随包默认，')
+console.log('       删掉那些块再重启 dsh。')

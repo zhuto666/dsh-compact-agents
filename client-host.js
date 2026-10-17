@@ -30,12 +30,41 @@
  * @module dsh-compact-agents/client-host
  */
 
-import { registerSettings } from './settings.js'
+import z from '@deepseek-ai/schemastery'
+import { registerSettings, seedConfigDefaults } from './settings.js'
 
 export const name = 'dsh-compact-agents/client-host'
 
 /** 不依赖任何服务：宿主根上没有 `compaction`，声明它只会让这一行永远 pending。 */
 export const inject = []
+
+/** 表单字段的默认值（= preset 文件本次读到的现值）；与 `apply()` 里的锚点必须同源。 */
+const seed = seedConfigDefaults()
+
+/**
+ * 设置表单的字段声明 —— 0.1.7 起**它本身就是**设置界面的来源，不再是"给宿主的一个提议"。
+ *
+ * 上游 601d6761e4 删掉了 `SettingsProvider.register()`，设置模型改成"宿主读每个 profile entry
+ * 自己导出的 `Config`"：`packages/settings/settings/src/index.ts` 的 `describe()` 里
+ * `schema = entry.fiber.runtime.Config`（私有方法 `schema(entry)`）、`ns = entry.options.id`，
+ * 再用 `volatileForm()` 只保留带 `.volatile()` 的字段；写入走 `configEditor.edit()`，落在
+ * profile 补丁的 `config:` 段。所以：
+ *
+ * - 字段顺序、默认值、取值范围都在这里 —— 浏览器半边只渲染，不再各写一份；
+ * - 默认值取 {@link seedConfigDefaults}（preset 文件现值），于是界面一打开显示的就是
+ *   "真正生效的值"，而不是插件凭空给的默认值；
+ * - 每个字段**都要** `.volatile()`：`volatileForm()` 只认这个标记，漏掉就不出现在表单里；
+ * - 字段改了会 dispose + 重挂这一行（`vendor/cordis/src/fiber.ts` 的 `update()`），
+ *   于是 `apply()` 重跑、新值被同步到 preset 文件 —— 见 `settings.js` 的 `registerSettings`。
+ */
+export const Config = z.object({
+  notice: z.boolean().default(seed.notice).volatile(),
+  maxAutoContinues: z.number().step(1).min(0).max(10).default(seed.maxAutoContinues).volatile(),
+  preemptiveRatio: z.number().min(0).max(1).default(seed.preemptiveRatio).volatile(),
+  thresholdRatio: z.number().min(0.05).max(0.95).default(seed.thresholdRatio).volatile(),
+  retainRatio: z.number().min(0.01).max(0.5).default(seed.retainRatio).volatile(),
+  bootstrapMaxTokens: z.number().step(1).min(1024).max(200000).default(seed.bootstrapMaxTokens).volatile(),
+})
 
 /**
  * 注册设置面，让浏览器 half 有对应的命名空间可配对。

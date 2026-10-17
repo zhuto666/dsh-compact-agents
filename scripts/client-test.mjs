@@ -199,8 +199,8 @@ const bundleExports = registration.factory(stubRequire)
 
 check('factory exports a cordis apply()', typeof bundleExports.apply === 'function')
 check('factory exports an inject list', Array.isArray(bundleExports.inject), JSON.stringify(bundleExports.inject))
-check('inject declares settingsScope and slots',
-  bundleExports.inject.includes('settingsScope') && bundleExports.inject.includes('slots'),
+check('inject declares configForms and slots',
+  bundleExports.inject.includes('configForms') && bundleExports.inject.includes('slots'),
   JSON.stringify(bundleExports.inject))
 check('bundle only requires platform seed modules (no dsh.client.external needed)',
   requireCalls.length > 0 && requireCalls.every(id => PLATFORM_MODULES.includes(id)),
@@ -285,9 +285,9 @@ const injectCalls = []
 const registrations = []
 const effects = []
 const ctx = {
-  settingsScope: {
-    bind(spec) {
-      boundSpecs.push(spec)
+  configForms: {
+    get(namespace) {
+      boundSpecs.push(namespace)
       return scope
     },
   },
@@ -309,9 +309,9 @@ const ctx = {
 
 bundleExports.apply(ctx)
 
-check('apply binds the compact-agents settings namespace',
-  boundSpecs.length === 1 && boundSpecs[0].namespace === 'compact-agents',
-  JSON.stringify(boundSpecs.map(spec => spec.namespace)))
+check('apply binds the compact-agents-client-host profile entry（0.1.7 起表单按 entry id 认领，不是 settings 命名空间）',
+  boundSpecs.length === 1 && boundSpecs[0] === 'compact-agents-client-host',
+  JSON.stringify(boundSpecs))
 /** 按槽位名找一条注册（三个宿主各一条）。 */
 const regBySlot = name => registrations.find(entry => entry.options?.name === name)
 const cardReg = regBySlot('settings.plugin.item')
@@ -710,7 +710,7 @@ try {
     const fresh = registration.factory(stubRequire)
     const seen = []
     fresh.apply({
-      settingsScope: { bind: () => scope },
+      configForms: { get: () => scope },
       slots: {
         inject(name, contribute) { return contribute() },
         register(options) {

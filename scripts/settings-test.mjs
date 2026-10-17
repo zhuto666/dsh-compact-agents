@@ -14,7 +14,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import {
   liveConfig,
   readKeyInRow,
@@ -28,6 +28,7 @@ import {
   writePresetValues,
   SETTINGS_FIELDS,
   SETTINGS_NAMESPACE,
+  ENTRY_ID,
 } from '../settings.js'
 import { PROJECT_ROOT } from './lib/presets.mjs'
 
@@ -172,70 +173,48 @@ check('an out-of-range value is rejected, not written',
   && fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.35'))
 check('a key whose row is absent is skipped', writePresetValues({ bootstrapMaxTokens: 4096 }, [path.join(sandbox, 'none.yml')])[0].status === 'unreadable')
 
-// 4. 命名空间注册：真 schemastery + 真 Context，只桩 settings 服务。
-/** 记录注册调用并按 schemastery 真解析一遍的 settings 桩。 */
-class StubSettings extends Service {
-  constructor(ctx) {
-    super(ctx, 'settings')
-    /** 每次 register 的入参。 */
-    this.calls = []
-    /** 已登记的观察者。 */
-    this.watchers = new Set()
-    /** 最近一次解析结果。 */
-    this.resolved = undefined
-  }
-
-  register(ns, schema, options) {
-    this.calls.push({ ns, schema, options })
-    this.resolved = schema({ ...(options?.base ?? {}) })
-    return {
-      get: () => this.resolved,
-      watch: (callback) => {
-        this.watchers.add(callback)
-        return () => this.watchers.delete(callback)
-      },
-      update: async () => {},
-      replace: async () => {},
-    }
-  }
+// 同一个文件里出现多个同名 row —— 0.1.7 起多个 preset 的声明内联在同一个 profile 补丁里
+// （每个 preset 的 plugins 数组各带一份 `compaction-basic`）。改值必须**所有**命中一起改：
+// 只改第一个的话，"在设置界面改阈值"就只对第一个预设生效，其余静默停在旧值。
+{
+  const multi = [
+    'plugins:',
+    '  - id: compaction-basic',
+    '    config:',
+    '      thresholdRatio: 0.3',
+    '  - id: something-else',
+    '  - id: compaction-basic',
+    '    config:',
+    '      thresholdRatio: 0.3',
+    '',
+  ]
+  setKeyInRow(multi, 'compaction-basic', 'thresholdRatio', '0.31')
+  check('every matching row in one file is rewritten',
+    multi.filter(line => line.includes('thresholdRatio: 0.31')).length === 2, multi.join(' | '))
 }
 
+// 4. 行配置的应用：0.1.7 起设置面就是"apply() 时把行配置同步到它真正生效的地方"，
+//    插件不再往宿主注册任何东西（字段声明搬进了 client-host.js 的 Config，第 6 段校验一致性）。
 resetSettingsStateForTest()
 setPresetFilesForTest([target])
 const ctx = new Context()
-ctx.plugin(StubSettings)
-await new Promise(resolve => setTimeout(resolve, 50))
-const settings = ctx.get('settings')
-await registerSettings(ctx, { maxAutoContinues: 5 })
 
-check('registers exactly one namespace', settings.calls.length === 1, `${settings.calls.length} call(s)`)
-check('the namespace is the one the browser card binds',
-  settings.calls[0]?.ns === SETTINGS_NAMESPACE, String(settings.calls[0]?.ns))
-check('the namespace declares its effect timing', settings.calls[0]?.options?.applies === 'restart',
-  String(settings.calls[0]?.options?.applies))
-check('the composition layer carries the row config',
-  settings.resolved?.maxAutoContinues === 5, JSON.stringify(settings.resolved))
-check('the composition layer carries the preset values',
-  settings.resolved?.thresholdRatio === 0.35 && settings.resolved?.bootstrapMaxTokens === 1024,
-  JSON.stringify(settings.resolved))
-check('a row config that the user never overrode stays a per-mount fallback',
-  liveConfig.maxAutoContinues === null && liveConfig.notice === null && liveConfig.preemptiveRatio === null,
+// 行配置与"上一次"同源（都等于 preset 现值）：什么都不该写。
+await registerSettings(ctx, {
+  notice: true, maxAutoContinues: 2, preemptiveRatio: 0.9,
+  thresholdRatio: 0.35, retainRatio: 0.05, bootstrapMaxTokens: 1024,
+})
+check('a row config that matches the seed leaves liveConfig untouched',
+  liveConfig.notice === null && liveConfig.maxAutoContinues === null && liveConfig.preemptiveRatio === null,
   JSON.stringify(liveConfig))
-check('a watcher is attached', settings.watchers.size === 1, `${settings.watchers.size} watcher(s)`)
+check('an untouched preset value is not rewritten',
+  fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.35'))
 
-await registerSettings(ctx, {})
-check('a second mount reuses the scope instead of registering twice',
-  settings.calls.length === 1, `${settings.calls.length} call(s)`)
-check('a second mount does not turn its own row config into a global override',
-  liveConfig.maxAutoContinues === null, String(liveConfig.maxAutoContinues))
-
-// 用户在设置里改动：自身旋钮立即生效，preset 参数落盘。
-for (const watcher of settings.watchers) {
-  await watcher(
-    { notice: false, maxAutoContinues: 1, preemptiveRatio: 0.8, thresholdRatio: 0.45, retainRatio: 0.05, bootstrapMaxTokens: 16384 },
-    settings.resolved,
-  )
-}
+// 用户在设置界面上改了：自身旋钮立即生效，preset 参数落盘。
+await registerSettings(ctx, {
+  notice: false, maxAutoContinues: 1, preemptiveRatio: 0.8,
+  thresholdRatio: 0.45, retainRatio: 0.05, bootstrapMaxTokens: 16384,
+})
 check('a settings change applies to the live knobs immediately',
   liveConfig.notice === false && liveConfig.maxAutoContinues === 1 && liveConfig.preemptiveRatio === 0.8,
   JSON.stringify(liveConfig))
@@ -244,6 +223,16 @@ check('a changed preset value reaches the file',
   fs.readFileSync(target, 'utf8').split('\n').find(line => line.includes('thresholdRatio')) ?? '')
 check('an unchanged preset value is not rewritten',
   fs.readFileSync(target, 'utf8').includes('retainRatio: 0.05'))
+
+// preset 行（index.js）传自己的行配置当锚点：行配置的值不算"用户覆盖"，否则任意一行设的
+// maxAutoContinues 会被当成全局覆盖、污染所有其它行（这三层在旧机制里是 base 那一层）。
+resetSettingsStateForTest()
+setPresetFilesForTest([target])
+await registerSettings(ctx, { maxAutoContinues: 5 }, {
+  notice: true, maxAutoContinues: 5, preemptiveRatio: 0.9,
+})
+check('a preset row anchor keeps its own row config out of liveConfig',
+  liveConfig.maxAutoContinues === null, String(liveConfig.maxAutoContinues))
 
 check('resolveMaxAutoContinues handles false/undefined/valid',
   resolveMaxAutoContinues({ maxAutoContinues: false }) === 0
@@ -262,20 +251,74 @@ check('resolvePreemptiveRatio handles false/0/undefined/valid/out-of-range',
   && resolvePreemptiveRatio({ preemptiveRatio: 'x' }) === 0.9,
   `${resolvePreemptiveRatio({ preemptiveRatio: false })}/${resolvePreemptiveRatio({ preemptiveRatio: 0 })}/${resolvePreemptiveRatio({})}/${resolvePreemptiveRatio({ preemptiveRatio: 0.8 })}/${resolvePreemptiveRatio({ preemptiveRatio: 1.5 })}`)
 
+// 4b. 0.1.7 的 volatile 契约（2026-09-24 实测，两处都会让"设置不生效"）：
+//   (a) `.volatile()` 字段进 `apply()` 时是 Volatile 对象（typeof 'object' + `.get()`），
+//       按标量读就永远比不中、永远不落盘；
+//   (b) 保存后**不会重挂插件** —— `apply()` 不会重跑（configuration.spec.ts:9 原话
+//       "updates the real consumer without remounting"），新值只能从行配置现读。
+resetSettingsStateForTest()
+setPresetFilesForTest([target])
+const liveCtx = new Context()
+const fakeEditor = {
+  entries: () => [{ options: { id: ENTRY_ID, config: { thresholdRatio: 0.46, notice: false } } }],
+}
+liveCtx.get = (name) => (name === 'configEditor' ? fakeEditor : undefined)
+
+await registerSettings(liveCtx, {
+  notice: { get: () => true },
+  maxAutoContinues: { get: () => 2 },
+  preemptiveRatio: { get: () => 0.9 },
+  thresholdRatio: { get: () => 0.44 },
+  retainRatio: { get: () => 0.05 },
+  bootstrapMaxTokens: { get: () => 1024 },
+})
+check('a volatile-wrapped row config is unwrapped before use',
+  fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.44'),
+  fs.readFileSync(target, 'utf8').split('\n').find(line => line.includes('thresholdRatio')) ?? '')
+
+liveCtx.emit('app-boot/config-reload')
+check('a value saved in the UI reaches the plugin without apply() re-running',
+  fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.46'),
+  fs.readFileSync(target, 'utf8').split('\n').find(line => line.includes('thresholdRatio')) ?? '')
+check('the live knobs follow the live row config too', liveConfig.notice === false, String(liveConfig.notice))
+
+// 4c. 落盘底数必须是**文件现值**，不是启动那一刻的 seed（2026-09-24 真机复现）：把旋钮从
+//     0.3 改成 0.31、再改回 0.3，界面与行配置都回到 0.3 了，preset 文件却停在 0.31 —— 新会话
+//     照旧读 0.31。根因是 seed 只读一次就冻结，"改回启动时的原值"被当成"没改过"而静默不写。
+resetSettingsStateForTest()
+setPresetFilesForTest([target])
+const revertCtx = new Context()
+const fixtureValue = readPresetValues([target]).values.thresholdRatio
+await registerSettings(revertCtx, { thresholdRatio: 0.9 })
+check('a changed preset value reaches the file（改回去的前一步）',
+  fs.readFileSync(target, 'utf8').includes('thresholdRatio: 0.9'))
+await registerSettings(revertCtx, { thresholdRatio: fixtureValue })
+check('a value reverted to the file\u0027s own value is still written',
+  fs.readFileSync(target, 'utf8').includes(`thresholdRatio: ${fixtureValue}`),
+  `fixture=${fixtureValue} file=${fs.readFileSync(target, 'utf8').split('\n').find(line => line.includes('thresholdRatio')) ?? ''}`)
+
 // 5. 两端接口一致性：宿主 schema ↔ 卡片字段 ↔ 命名空间字符串。
 // 这个接口是刻意在两端各写一份的（宿主声明 schema，卡片渲染表单），所以必须有守卫钉住，
 // 否则哪天只改一边，界面会安静地少一个字段或者写出宿主不认识的键。
 const hostFields = Object.keys(SETTINGS_FIELDS)
 const clientSource = fs.readFileSync(path.join(PROJECT_ROOT, 'lib/client.js'), 'utf8')
 const cardFields = new Set([...clientSource.matchAll(/field:\s*'([A-Za-z0-9_]+)'/g)].map(match => match[1]))
-check('every documented field really exists in the registered schema',
-  settings.resolved !== undefined && hostFields.every(field => field in settings.resolved),
-  `${hostFields.join(',')} vs ${Object.keys(settings.resolved ?? {}).join(',')}`)
+// 字段声明的单一来源是 client-host.js 导出的 Config —— 0.1.7 起它就是设置表单本身。
+const hostConfig = (await import('../client-host.js')).Config
+const schemaDict = hostConfig.dict ?? {}
+check('every documented field really exists in the Config schema',
+  hostFields.every(field => field in schemaDict),
+  `${hostFields.join(',')} vs ${Object.keys(schemaDict).join(',')}`)
+check('every Config field is volatile（不加 volatile 的字段不会进设置表单）',
+  hostFields.every(field => schemaDict[field]?.meta?.volatile === true),
+  Object.entries(schemaDict).map(([key, node]) => `${key}:${node.meta?.volatile === true}`).join(' '))
 check('the card edits exactly the fields the host schema declares',
   cardFields.size === hostFields.length && hostFields.every(field => cardFields.has(field)),
   `host=${hostFields.join(',')} card=${[...cardFields].join(',')}`)
 check('both halves key on the same namespace string',
   clientSource.includes(`'${SETTINGS_NAMESPACE}'`), SETTINGS_NAMESPACE)
+check('both halves key on the same profile entry id（0.1.7 起表单按它认领，不是命名空间）',
+  clientSource.includes(`'${ENTRY_ID}'`), ENTRY_ID)
 
 resetSettingsStateForTest()
 setPresetFilesForTest(null)

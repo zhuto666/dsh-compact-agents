@@ -578,6 +578,32 @@ root wins a duplicate id: a shipped preset shadows any directory that claimed it
 - **与 §8.5 的关系**：那两条静默失败分析仍然成立 —— 老槽位依旧没有任何渲染方；插件页那条过滤条件
   依旧会静默吞掉"半装"的 bundle。`settings.section` 只是让这两条不再是**唯一**出路。
 
+### 8.8 0.1.7 的 volatile 契约：保存**不会重挂插件**（2026-09-24）
+
+0.1.7 的表单字段一律是 `.volatile()` 的：宿主 `describe()` 用 `volatileForm()`
+(`packages/settings/settings/src/index.ts`) 把字段包成 `Volatile` 引用交给插件，上游测试
+`packages/settings/settings/tests/configuration.spec.ts:9` 的用例名就是契约原话
+"updates the real consumer without remounting" —— **在界面上保存不触发 cordis 的
+`update()` → `_reload()`**，`apply()` 里那次 `registerSettings()` 拿到的永远是启动那一刻的值。
+`configEditor.edit()`(`packages/boot/config-editor/src/index.ts`) 只做两件事：把行配置写进
+profile 补丁的 `config:` 段，再 `reconcileProfilePatches()`。三条推论，每条对应一次实机翻车：
+
+1. **字段值要解包**：`.volatile()` 字段到手是对象(`typeof 'object'`，`.get()` 才是标量)。
+   按标量读 ⇒ 六个字段全部静默不生效（2026-09-24 实测：界面把 0.3 改成 0.31，四份 preset 一行没动，
+   只有 profile 补丁尾部长出一行 `compact-agents-client-host: {thresholdRatio: 0.31}`）。
+   解法是 `settings.js` 的 `plainValue()` / `plainRowConfig()`。
+2. **值必须现读**：保存后没有 `apply()` 可等，只能订阅 DSH 既有的两个信号
+   (`app-boot/config-reload`，`packages/boot/app-boot/src/index.ts:298`；`settings/document-updated`)
+   再 `configEditor.entries().find(row => row.options.id === ENTRY_ID).options.config` 取一次现值 ——
+   即 `watchLiveRowConfig()`。**只有宿主那一行**(`client-host.js`，不传 `anchor`)装监听：
+   preset 行的行配置是"本代 mount 那一刻的旋钮"，不该由它改写 `liveConfig`。
+3. **落盘底数只能是文件现值**：seed 读一次就冻结，于是用户把旋钮**改回启动时的原值**会被当成
+   "没改过"而静默不写 —— 界面与行配置都回到 0.3、preset 文件却停在 0.31，新会话照旧读 0.31
+   (2026-09-24 真机复现：0.3 → 0.31 → 改回 0.3)。现在底数取 `currentPresetValues()`；
+   "不覆盖用户手改 preset"的防线移到更可靠的一处：表单只把**用户真在界面上存过的字段**写进
+   行配置，没存过的是 `undefined`，`applySettings()` 直接跳过。
+   `scripts/settings-test.mjs` 的 §4c 钉住这条（把修复拿掉即 FAIL）。
+
 ## 9. 压缩参数的机制与调参取舍
 
 §5 列出了那几个旋钮，§8.2 讲了两类生效机制；这一节补上**它们为什么长这样、调它们各自的代价是什么**。
@@ -735,3 +761,44 @@ pre-step 量到 196K：达线 → 摘要 15s    ← 这 15s 全在"第一个 tok
 `preemptiveRatio` 与 `notice` / `maxAutoContinues` 同类：**事件发生时才读**（这里是 `turn/end`），
 因此改完立即生效，不写 preset、不需要新会话（§9.4 说的是那三个必须写 preset 的值）。
 三级优先级照旧：行配置 `preemptiveRatio: 0`（或 `false`）< 设置界面用户层；`0` 是关闭。
+
+## 11. 随包 preset 的覆盖清单：为什么必须动态枚举（v0.9.1）
+
+### 11.1 现场：新开对话「功能没了」，校验器却报 ALL OK
+
+2026-10-16，DSH 升到 0.2.1-alpha.3：新增 `packages/bundle/web-app/presets/cordis.patch.yml`，并且
+`packages/client/ui-agent-preset/src/client/index.ts:204` 把新建会话的默认预设写死成 `agentPreset: 'cordis'`。
+本插件的挂载行靠 profile 补丁里 `- id: preset-<名>` 的 `config:` 覆盖落下 —— 覆盖是「每份 preset 一份完整 config」，
+所以清单少一份，就等于那份 preset 的会话拿不到 `compact_agents`、压缩播报与自动续写。
+
+旧安装脚本只处理三份固定的随包 preset（standard / ptc / minimal），profile 里另有用户自建的 liangshen / router-*。
+于是 cordis 的会话：工具没有、播报没有、自动续写没有；而 `validate-presets.mjs` 只校验「已经挂上的那些」，
+照样打印 `ALL OK (7 preset mounted)` —— 守卫在跑、什么都没查。这是本项目第二次栽在同一类问题上（第一次见 §3 的
+「0.1.7 迁移后 validator 对整个补丁 SKIP」）：**清单写死** + **校验只看自己以为的那部分**。
+
+### 11.2 覆盖为什么必须写完整 config
+
+`app-boot/src/config-schema/document.ts:159` 的注释只有一句：A patch config replaces the whole config。
+所以 `- id: preset-x` 块的 `config:` 不是「差异补丁」而是整份替换 —— 必须把随包那份 config 原样搬过来再插我们的行。
+这也解释了 §11.1 的另一半：随包升级新增的行（这次是 `time-context`、`tool-schedule`）如果不跟着刷新，
+就会被整份替换吃掉，于是那份 preset 少了随包自带的工具。
+
+### 11.3 现在的做法：清单从检出读，缺一份直接 FAIL
+
+- `listShippedPresets(checkout)` 读 `packages/bundle/web-app/presets/*.patch.yml` 里的 `- insert:` → `- id: preset-<名>`，
+  得到「当前这个 DSH 版本有哪些随包 preset」。上游再新增，代码不用改。
+- `syncOverrides(text, presets)`：每份随包 preset 一个覆盖块，已存在就按随包内容重建。三条不变量 ——
+  用户调过的 `thresholdRatio` / `retainRatio` 保留；旧块里随包没有的插件行（plugins 直接子项与组内 config 子项各一层）
+  合并回去；写入前逐字节比较，等价就不写（幂等，install 可以随时重跑）。
+- `ensureDeclaredRows(text, shippedNames)`：用户自建 preset 只补缺失的行与阈值，**不重建 config**。
+- `validate-presets.mjs` 先跑覆盖守卫：检出里每份随包 preset 在 profile 里必须出现，缺一份 FAIL 并提示重跑 install。
+
+### 11.4 代价与边界
+
+- 覆盖块与随包内容**同代**：随包改了值，重跑 install 会把覆盖块刷新成新值；用户调过的值优先，不会被覆盖。
+- 用户手工给随包 preset 加的行能活下来，但**顺序**会挪到所属组末尾（YAML 插件列表顺序对引擎没有影响）。
+- 自建 preset 的 `config:` 是用户自己写的全貌，插件不认它，所以只补行、不重建。
+- 随包覆盖块里的 `!!js` 表达式不能原样搬：`baseUrl` 在 profile 补丁里指向 profile 目录，
+  `createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')` 在那儿找不到包。
+  `buildOverride()` 把 `createRequire(baseUrl)` 改写为 `createRequire(process.argv[1])` 并包 try/catch ——
+  解析不到就退回空列表，不会让整份 profile 补丁加载失败。

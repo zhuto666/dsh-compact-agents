@@ -1039,7 +1039,14 @@ export function apply(ctx, config) {
   if (typeof ctx.on === 'function') ctx.on('dispose', () => liveMounts.delete(record))
   registerSessionWatch(ctx, mount)
   if (mount.livePresetParams) syncPresetParams(ctx)
-  void registerSettings(ctx, config).catch((error) => {
+  // 这一行的"作文层"：preset 行自己的旋钮。`liveConfig` 里的 null 表示"没被覆盖、按各挂载的
+  // 行配置走"，所以比对基准必须是**本行**配置解析出的值 —— 不传的话，任意一行设的
+  // maxAutoContinues 都会被当成全局覆盖，把所有其它 preset 行的续写次数一起改掉。
+  void registerSettings(ctx, config, {
+    notice: config?.notice !== false,
+    maxAutoContinues: resolveMaxAutoContinues(config),
+    preemptiveRatio: resolvePreemptiveRatio(config),
+  }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     ctx.logger.warn(`compact-agents: settings registration failed: ${message}`)
   })
