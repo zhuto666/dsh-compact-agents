@@ -802,3 +802,58 @@ pre-step 量到 196K：达线 → 摘要 15s    ← 这 15s 全在"第一个 tok
   `createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')` 在那儿找不到包。
   `buildOverride()` 把 `createRequire(baseUrl)` 改写为 `createRequire(process.argv[1])` 并包 try/catch ——
   解析不到就退回空列表，不会让整份 profile 补丁加载失败。
+
+## 12. 升级即自愈：为什么把安装脚本的逻辑搬进运行时（v0.10.0）
+
+### 12.1 现场：三件事同时错，用户只看到「装了但不生效」
+
+2026-10-26，用户报「我安装的 压缩与自动续写 怎么没有生效」。运行中的是**桌面版**
+（`E:\DeepSeek\DeepSeek Harness.exe` 0.2.1-rc.3，preset 封在 `resources/app.asar` 内），
+profile = `~/.dsh/profiles/desktop`。只读核查出三条互相独立的故障：
+
+1. **真正干活的 preset 行一份都没挂**：桌面 profile 补丁 82 行，`compact-agents` 出现 0 次。
+   所有覆盖块都在 `~/.dsh/profiles/web/cordis.patch.yml`（另一个已停用的 profile）。
+   `compact_agents` 工具、压缩播报、自动续写、回合结束预压**全部**由那一行提供，所以是整体缺失。
+2. **设置落盘写去了废文件**：`discoverPresets()` 返回「第一个含 `compaction-basic` 的 profile 补丁」，
+   本机 `web` 排在 `desktop` 前面，于是桌面里改 `thresholdRatio` 静默写进 `web`。
+3. **安装脚本读不到这套 preset**：`listShippedPresets()` 只认 `packages/bundle/*/presets/`，
+   打包版没有这个磁盘目录；它会去找 `D:\dy\deepseek-harness`（另一套 dev 检出），而两份内容已漂移
+   （打包版 standard 多一行 `tool-subagent-list-agents`）—— 照 dev 版生成覆盖会把子代理工具行写坏。
+
+三条的共同点：**都只在"用户手动跑脚本"这条路上被发现**，而用户不会去跑，也没人告诉他升级后要重跑。
+
+### 12.2 做法：把 install 的核心搬进 `lib/self-heal.js`，在宿主行排一次
+
+`client-host.js` 的 `apply()` 注册完设置面后排定一次自愈（默认延迟 2s，`unref`，进程内只排一次）：
+
+1. profile 目录取 `ctx.get('profileContext').dir` —— 这是"当前跑的到底是哪个 profile"的唯一权威答案
+   （`packages/dsh/lib/profile-boot-*.js` 在 boot 前 `provide('profileContext', …)`）；
+   同时 `setActiveProfileDir()` 交给 `discoverPresets()`，第 12.1 条第 2 点随之修好。
+2. `listShippedPresets(runtime)`：`runtime` 由 `resolveDshRuntime()` 定位，**两种布局都认** ——
+   源码检出的 `packages/bundle/*/presets/`，以及打包安装的
+   `node_modules/@deepseek-ai/dsh-web-app/presets/`（路径常落在 `app.asar` 内）。
+3. 走与 install 完全相同的 `syncOverrides()` + `ensureDeclaredRows()`（同一份实现，不复制），
+   有变化才写：`.bak-compact-agents` → 临时文件 → `rename`。
+4. `hmr.runExclusive(() => hmr.reconcileProfile())` 热重组 —— 与插件市场安装插件同一条通道
+   （`packages/hmr/src/index.ts:1322` 的 "HMR profile reconciliation must run inside runExclusive"）。
+   拿不到 `hmr` 时只落文件，并在日志里明说"下次启动生效"，绝不假装成功。
+
+### 12.3 为什么要读 `app.asar`（而不是只认检出）
+
+Electron 的 `fs` 原生支持 asar 虚拟路径，所以**插件运行时**（跑在 Electron 里）读它没问题；
+但 `node scripts/*.mjs` 用的是系统 node，同一路径得到 `ENOENT`。于是 `scripts/lib/presets.mjs` 里加了
+一层 40 行的只读 fs 抽象（`exists` / `readText` / `listEntries`）：先试磁盘，失败再解析 asar 头
+（16 字节头 + JSON 头表 + 数据段偏移，`splitAsarPath()` 按路径里第一个 `.asar` 段切分）。
+脚本与运行时因此共用同一份"随包 preset 从哪来"的判断，不会各走一套。
+
+### 12.4 边界（这里刻意保守）
+
+- **只在宿主行跑**，不在 preset 行跑：preset 行随会话换代反复 `apply`，而且它自己就在要被改写的那个
+  文件所描述的对象里；宿主行一个进程只 `apply` 一次。
+- **延迟执行 + 进程内一次**：`apply()` 期间 Loader 还在组合，立刻 reconcile 会自己等自己。
+- **失败只 warn**：任何一步抛错都不影响插件本体与宿主启动；报告里写明哪一步、为什么。
+  `DSH_COMPACT_AGENTS_NO_SELF_HEAL=1` 与行配置 `selfHeal: false` 都能关掉。
+- **只做加法**：用户调过的阈值、手工追加的行、自建 preset 的定制内容一律保留（§11.3 的三条不变量
+  由同一套函数保证）；`scripts/self-heal-test.mjs` 逐条锁住。
+- **不重启进程**：热重组只让**新开的会话**用上新预设；已经在跑的会话不会被换 preset
+  （`agent-preset/locked` 的既有语义，见 §3）。

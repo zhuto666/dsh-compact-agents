@@ -31,12 +31,18 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { profileDirFromArgv, setActiveProfileDir } from './scripts/lib/presets.mjs'
+import { scheduleSelfHeal } from './lib/self-heal.js'
 import { registerSettings, seedConfigDefaults } from './settings.js'
 
 export const name = 'dsh-compact-agents/client-host'
 
 /** 不依赖任何服务：宿主根上没有 `compaction`，声明它只会让这一行永远 pending。 */
 export const inject = []
+
+//update-begin---author:admin ---date:2026-10-26  for：【bug】本模块 import 时就要算 seed（Config 的默认值），那会儿还没有 ctx；先用命令行猜出 profile，免得默认值读的是另一个 profile 的补丁-----------
+setActiveProfileDir(profileDirFromArgv())
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
 
 /** 表单字段的默认值（= preset 文件本次读到的现值）；与 `apply()` 里的锚点必须同源。 */
 const seed = seedConfigDefaults()
@@ -67,14 +73,30 @@ export const Config = z.object({
 })
 
 /**
- * 注册设置面，让浏览器 half 有对应的命名空间可配对。
- * @param ctx - 宿主根上下文，携带 settings 服务与 logger。
- * @param config - 可选的同名行配置；`settings: false` 关闭设置面。
+ * 注册设置面，让浏览器 half 有对应的命名空间可配对；随后排一次**自愈**。
+ *
+ * 自愈做的是"把本插件挂进每份随包 preset 的 compaction 组"—— `compact_agents` 工具、
+ * 压缩播报、自动续写、回合结束预压全靠那一行，而 preset 声明只能改 profile 的
+ * `cordis.patch.yml`。以前要用户手跑 `node scripts/install.mjs`；现在每次启动（含
+ * 从社区更新版本后的重启/热载）自己检查一遍并补上，见 `lib/self-heal.js`。
+ *
+ * @param ctx - 宿主根上下文，携带 settings 服务、logger、profileContext 与 hmr。
+ * @param config - 可选的同名行配置；`settings: false` 关闭设置面，`selfHeal: false` 关闭自愈。
  * @returns 注册完成后 resolve；失败只记 warn，绝不让宿主启动被这一行拖垮。
  */
 export function apply(ctx, config) {
+  //update-begin---author:admin ---date:2026-10-26  for：【bug】宿主行是唯一知道"当前跑的是哪个 profile"的地方：设置落盘与自愈都以它为准（旧逻辑会写到别的 profile）-----------
+  try {
+    const profile = ctx?.get?.('profileContext')
+    if (typeof profile?.dir === 'string' && profile.dir !== '') setActiveProfileDir(profile.dir)
+  } catch {
+    // 桩上下文没有 get()：保持导入期猜出来的那个。
+  }
+  //update-end---author:admin ---date:2026-10-26  for：【bug】-----------
   return registerSettings(ctx, config).catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     ctx.logger.warn(`compact-agents: client-host settings registration failed: ${message}`)
+  }).finally(() => {
+    scheduleSelfHeal(ctx, { enabled: config?.selfHeal !== false })
   })
 }

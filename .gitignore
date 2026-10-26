@@ -7,6 +7,8 @@ node_modules/
 # 本地实验/临时目录。
 .testlab/
 .DS_Store
+# dsh-ops 面板在本工作区生成的会话快照（含本地路径与会话内容）。
+.dsh-ops/
 
 # 编辑器产物（可能含本地路径）。
 .idea/

@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.9.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -20,19 +20,25 @@
 
 ## 安装
 
-> 需要 Node.js ≥ 20、PATH 上有 `pnpm`，以及带 `agent-presets` 的 DeepSeek Harness **源码检出**（安装脚本据此定位 `@deepseek-ai/dsh-tools` 与 `cordis`；全局 `npm i -g` 的布局未验证）。
+> 需要 Node.js ≥ 20 与带 `agent-presets` 的 DeepSeek Harness。**源码检出与桌面版（打包在 `app.asar` 里）都支持**；桌面版的 profile 由 Electron 独占管理，插件请从「侧栏 → 插件」或市场装。
 
-安装分两步：先装包（官方通道，pnpm 从 GitHub 取包），再把挂载行写进 preset。第二步不能省 —— `compact_agents` 工具必须挂在 preset 的 `compaction` 隔离组里才拿得到 `ctx.compaction`，这一行无法由插件包自带。
+装包与"把挂载行写进 preset"是两件事 —— `compact_agents` 工具必须挂在 preset 的 `compaction` 隔离组里才拿得到 `ctx.compaction`，这一行无法由插件包自带。
+
+**平时只要装包就行**：插件第一次启动时会自己把挂载行补齐（`lib/self-heal.js`，每次启动检查一遍、缺什么补什么，补完用 hmr 热重组，新开会话即可用）。所以从社区更新版本这一件事就够了，不需要再手跑任何脚本。
 
 ```sh
-# 1. 装包：登记 profile 依赖与 bundle（浏览器 half，即设置里那张表单）
+# 官方通道装包：登记 profile 依赖与 bundle（浏览器 half，即设置里那张表单）
 dsh plugin --profile web add github:zhuto666/dsh-compact-agents
-
-# 2. 挂载 preset 行：工具本体 + 路径自愈（幂等，可重复执行）
-node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 ```
 
-`--profile web` 换成你实际启动的 profile 名；`dsh plugin` 把其余参数原样转发给该 profile 目录里的 pnpm。第二步先加 `--dry-run` 可预览改动、不落盘。
+`--profile web` 换成你实际启动的 profile 名；`dsh plugin` 把其余参数原样转发给该 profile 目录里的 pnpm。桌面版直接在插件页点安装即可。
+
+想让自愈**立刻**跑而不是等下次启动（或想先看差异再决定），跑离线版：
+
+```sh
+# 幂等；--dry-run 只预览不落盘
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
+```
 
 `<profile-dir>` 是该 profile 的目录，默认为 `~/.dsh/profiles/<profile 名>`。`~` 只在 macOS、Linux 与 Git Bash 里展开，这几种环境可以照写；Windows 的 PowerShell 与 cmd 不展开它，要写完整路径，如 `<用户目录>\.dsh\profiles\web\node_modules\dsh-compact-agents\scripts\install.mjs`。
 
@@ -44,9 +50,10 @@ dsh plugin --profile web add /absolute/path/to/dsh-compact-agents
 node scripts/install.mjs
 ```
 
-`install.mjs` 是幂等的，依次做四件事：建 `node_modules/@deepseek-ai/{dsh-tools,cordis,schemastery}` 三个联接 → 往每个含 `compaction` 组的 preset 追加挂载行（路径变了自动改指）→ 把包名同时写进 profile 的 `dependencies` 与 `dsh.profile.bundles` → 调用官方通道 `dsh plugin add`（`--no-cli` 跳过这一步）。preset 一份都没找到时，用 `--preset <agent.cordis.yml>` 显式指定。
+`install.mjs` 是幂等的，按安装形态做不同的事：**源码检出**上依次是建 `node_modules/@deepseek-ai/{dsh-tools,cordis,schemastery}` 三个联接 → 覆盖 preset → 登记 profile 依赖与 bundle → 调官方通道 `dsh plugin add`（`--no-cli` 跳过）；**桌面版**上没有可指的检出、profile 也被 Electron 独占，于是跳过联接与 `dsh plugin add`，只做 preset 覆盖与登记。preset 一份都没找到时，用 `--preset <agent.cordis.yml>` 显式指定。
 
-> preset 挂载行写的是**绝对路径**：preset 里的裸包名是从 harness 安装位置解析的，指向用户目录的包根本解析不到。项目移动或改名后，重跑一次 `install.mjs` 就会自动修正。
+> preset 挂载行写的是**绝对路径**：preset 里的裸包名是从 harness 安装位置解析的，指向用户目录的包根本解析不到。项目移动或改名后自愈会按当前安装位置改写这一行（也可以重跑 `install.mjs`）。
+
 
 ## 它解决什么问题
 
@@ -204,24 +211,27 @@ DSH 的自动压缩挂在**每个模型请求之前**判定（`agent/pre-step`�
 | 症状 | 原因 | 处理 |
 |---|---|---|
 | 设置里没有「压缩与自动续写」 | 装完没重启 `dsh`；客户端模块的 rev 只在启动时算 | 重启一次 `dsh` |
+| 表单能打开、但 `compact_agents` 工具不在、压缩也不播报 | preset 覆盖块没写进**当前** profile（多 profile 并存时最容易：覆盖写去了另一个 profile） | 插件每次启动会自愈；看日志里 `compact-agents: 已自动修复 preset 覆盖`。仍不生效就跑一次 `scripts/install.mjs`，再重启 |
+| 桌面版（`E:\DeepSeek` 那种打包安装）里完全不生效 | 随包 preset 封在 `resources/app.asar` 里，旧脚本按源码检出找不到它 | 已修（0.10.0 起脚本与自愈都能读 asar）；升级插件版本后重启即可 |
 | 表单在，但侧栏「插件」页里整条看不到本包 | 包名只写进了 `dsh.profile.bundles`、没写进 profile `dependencies` —— 新版插件页只列 `installed \|\| optional \|\| error` 的 bundle，且毫无报错 | 重跑 `scripts/install.mjs`（两处都写），再重启；`validate-presets.mjs` 会把这种半装状态判成 FAIL |
 | 界面上既没有命名空间也没有表单，且毫无报错 | 只挂了 preset、没登记成 profile bundle —— 浏览器根本收不到 `lib/client.js` | 同上（[§8.4](docs/design.md)） |
 | 老设置页（DSH ≤ 0.1.5）里卡片凭空消失，也不报错 | 老槽位 `settings.plugin.item` 在 ≥ 0.1.6 已无渲染方；`slots.inject` 对没人声明的槽位是静默的，注册上去既不抛错也不显示 | 用「设置 → 压缩与自动续写」或插件页详情页，不要依赖老槽位（[§8.5](docs/design.md)） |
 | 预设文件里明明是新阈值，会话仍按旧值压 | 热同步没进去（配置形状变了／写不进去）；提示里会同时报出两个值 | 新开一条对话才会用上新值（[§6](docs/design.md)） |
 | 压缩提示里出现"新开一条对话才会用上新值" | 自我反证发现引擎仍按旧阈值判（证据是下一次由策略自己决定的压缩） | 同上 |
-| 升级 `@linxin666/*` 之后 `compact_agents` 工具没了 | 随包发行的 preset 被它自己的升级整份重写，我们的挂载行丢了 | 重跑 `scripts/install.mjs`；`validate-presets.mjs` 会先告诉你是哪一份 |
-| 自己改的 preset 不生效 | 同 id 的发行 preset 会遮蔽用户 preset（`agent-presets` 的 roots 顺序是随包最先、用户最后） | 改随包那份（并在下次升级后重跑安装脚本），或给自建 preset 换个 id |
+| 升级 `@linxin666/*` 之后 `compact_agents` 工具没了 | 随包发行的 preset 被它自己的升级整份重写，我们的挂载行丢了 | 插件启动时自愈会补回；也可重跑 `scripts/install.mjs`，`validate-presets.mjs` 会先告诉你是哪一份 |
+| 自己改的 preset 不生效 | 同 id 的发行 preset 会遮蔽用户 preset（`agent-presets` 的 roots 顺序是随包最先、用户最后） | 改随包那份（自愈会保留你手工追加的行与调过的阈值），或给自建 preset 换个 id |
 | 插件页里关掉本插件，`compact_agents` 却还能用 | 那个开关只动宿主组成里的 bundle 行，工具由 preset 行提供 | 要整体停用：跑 `scripts/uninstall.mjs` |
 
 ## 更新 / 卸载
+
+**更新就是装新版本这一个动作**：插件启动时自愈会把 preset 覆盖刷新到与新随包 preset 一致（新预设、新插件行、以及你调过的阈值都照顾到），补完热重组，新开对话即生效。
 
 ```sh
 # 源码 checkout
 git -C <checkout> pull && node scripts/install.mjs
 
-# 从 GitHub 安装：pnpm 重新解析该 git 依赖，再补一次挂载行
+# 从 GitHub 安装
 dsh plugin --profile web update dsh-compact-agents
-node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 
 # 卸载（先 --dry-run 预览）
 node <插件目录>/scripts/uninstall.mjs
@@ -245,7 +255,7 @@ node <插件目录>/scripts/uninstall.mjs
 | 设置面：宿主组成那一行（§8.4）、两处静默失败（§8.5）、已知限制（§8.6）、为什么自成一页（§8.7） | [§8](docs/design.md) |
 | 压缩参数的机制与调参取舍 | [§9](docs/design.md) |
 
-代码结构：`index.js`（preset 行入口：注册工具 + 会话监听）、`client-host.js` + `cordis.patch.yml`（宿主组成行入口：下发浏览器 half + 注册设置命名空间）、`settings.js`（设置命名空间与 preset 参数读写）、`lib/client.js`（浏览器 half，手写单文件、无构建步骤，界面文案的唯一权威）、`scripts/*`（安装 / 卸载 / 校验 / 测试）。
+代码结构：`index.js`（preset 行入口：注册工具 + 会话监听）、`client-host.js` + `cordis.patch.yml`（宿主组成行入口：下发浏览器 half + 注册设置命名空间 + 排定自愈）、`settings.js`（设置命名空间与 preset 参数读写）、`lib/self-heal.js`（启动自愈：把挂载行补进当前 profile 的 preset 覆盖并热重组）、`lib/client.js`（浏览器 half，手写单文件、无构建步骤，界面文案的唯一权威）、`scripts/*`（安装 / 卸载 / 校验 / 测试）。
 
 开发：
 
@@ -266,13 +276,31 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 - **`scope: "self"` 是异步的**：工具立刻返回 `queued`，真正的压缩发生在本轮 turn 结束之后，结果写进 DSH 日志而不是工具返回值。
 - **已 composed 的会话拿不到新工具**：preset 改动只对新会话生效；老会话需新开（重启会丢成员会话）。
 - **不做孤儿数据 / 状态清理**：本插件无状态（零持久化、零网络、不改变自动压缩策略）。
-- **只支持 DSH 开发检出布局**：安装脚本要求检出里同时有 `packages/core/tools` 与 `vendor/cordis`；全局 `npm i -g` 的布局未验证。
+- **自愈只保证"下一次启动前补齐"**：启动自愈在 `apply()` 里排定、延迟约 2 秒执行；拿不到 `hmr` 服务的场景（如 `dsh --profile web` 之外的直接调用）只落文件，要下次启动才生效，日志里会写明。
 - **插件页的启用 / 停用开关只管浏览器 half**：关掉它，动的是宿主组成里那一行（`compact-agents-client-host`），表单不再出现；而 `compact_agents` 工具由 preset 行提供，与这个开关无关，照常可用。
-- **随包发行的 preset 会被它自己的插件升级冲掉**：无论 `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行，还是 profile 补丁里 `- id: preset-<随包名>` 的覆盖块，都是安装时写进去的；插件升级会整份重写它，DSH 升级还会新增 preset。重跑 `scripts/install.mjs` 即可 —— 它按检出里的**全部**随包 preset 重新覆盖，漏掉哪份 `validate-presets.mjs` 会直接 FAIL。同一处还有一层遮蔽：同 id 的发行 preset 会盖掉用户自建的 preset。
+- **随包发行的 preset 会被它自己的插件升级冲掉**：无论 `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` 里那一行，还是 profile 补丁里 `- id: preset-<随包名>` 的覆盖块，都是安装时写进去的；插件升级会整份重写它，DSH 升级还会新增 preset。**启动自愈会按运行时的全部随包 preset 重新覆盖**（保留你手工追加的行与调过的阈值），所以正常情况下你什么都不用做；漏掉哪份 `validate-presets.mjs` 会直接 FAIL。同一处还有一层遮蔽：同 id 的发行 preset 会盖掉用户自建的 preset。
 
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.10.0 — 2026-10-26
+
+**新行为：升级即自愈，不再需要手跑安装脚本**
+
+- 插件每次启动（含从社区更新版本后的重启/热载）检查"当前 profile 有没有把本插件挂进每份随包 preset 的 `compaction` 组"，缺什么补什么，补完用 `hmr.reconcileProfile()` 热重组 —— 新开对话即可用，全程不需要手动执行任何命令。
+- 自愈只做加法：随包 preset 逐份整份覆盖（`compact-agents` 行 + 默认阈值），**你调过的 `thresholdRatio` / `retainRatio` 和你手工追加的行一律保留**；自建的 preset 只补缺失的行，不重建。
+
+**修复**
+
+- **桌面版（DSH 打包在 `resources/app.asar` 里）装了却完全不生效**：旧的随包 preset 清单只从源码检出读，打包安装下读不到（或读到**另一个 DSH 版本**的 preset，照它生成覆盖会把工具行写坏）。现在脚本与运行时都能直接读 `app.asar`，`listShippedPresets()` 以实际运行的运行时为准。
+- **多 profile 并存时设置静默写到别的 profile**：`discoverPresets()` 以前返回第一个命中的 profile 补丁 —— 本机 `web` 与 `desktop` 都装了本插件，于是在桌面版里改压缩阈值会写进早已不用的 `web`。现在以当前运行的 profile 为准（`profileContext.dir`，导入期用命令行兜底）。
+- **桌面版跑不了安装脚本**：`dsh plugin add` 对 Electron 独占的 profile 直接拒绝、也没有"检出"可建联接。脚本现在识别打包安装并只做能做的事（preset 覆盖 + profile 登记），不再报错退出。
+- `validate-presets.mjs` 在没有源码检出的机器上不再直接崩溃，退化为文本级检查。
+
+**不变**
+
+- 工具行为、参数、界面均未改动。升级后仍需重启一次 `dsh`（宿主组成变了），重启后新开对话生效。
 
 ### 0.9.1 — 2026-10-17
 

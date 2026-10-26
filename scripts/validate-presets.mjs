@@ -15,21 +15,41 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs, resolveDshCheckout } from './lib/presets.mjs'
-import { listShippedPresets } from './lib/preset-overrides.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, ROW_ID, discoverPresets, parseCommonArgs, resolveDshCheckout, resolveDshRuntime } from './lib/presets.mjs'
+import { findBlock, listShippedPresets } from './lib/preset-overrides.mjs'
 
 // 本项目刻意不装依赖（离线、零安装）：js-yaml 与 cordis 一样从 DSH 检出里借。
 // 检出位置靠自描述探测（--dsh / $DSH_CHECKOUT / 既有联接 / profile），不写死盘符。
 const dshFlag = process.argv.indexOf('--dsh')
-const DSH_CHECKOUT = resolveDshCheckout(dshFlag === -1 ? undefined : process.argv[dshFlag + 1])
-const require = createRequire(`${DSH_CHECKOUT.replace(/\\/g, '/')}/package.json`)
-const yaml = require('js-yaml')
-// preset 里用 `!!js process.platform === 'win32'` 这类表达式，标准 schema 不认。
-const schema = yaml.DEFAULT_SCHEMA.extend([
+const explicitDsh = dshFlag === -1 ? undefined : process.argv[dshFlag + 1]
+//update-begin---author:admin ---date:2026-10-26  for：【bug】只有打包运行时（Electron 桌面版）的机器上没有可解析的检出，旧代码在这里直接抛错、什么都校验不了；改为"有检出就做 YAML 校验，没有就退化成文本检查"-----------
+let DSH_CHECKOUT
+try {
+  DSH_CHECKOUT = resolveDshCheckout(explicitDsh)
+} catch {
+  DSH_CHECKOUT = undefined
+}
+const DSH_RUNTIME = (() => {
+  try {
+    return resolveDshRuntime(explicitDsh ?? DSH_CHECKOUT)
+  } catch {
+    return undefined
+  }
+})()
+let yaml
+if (DSH_CHECKOUT !== undefined) {
+  const require = createRequire(`${DSH_CHECKOUT.replace(/\\/g, '/')}/package.json`)
+  yaml = require('js-yaml')
+} else {
+  console.log('SKIP js-yaml：找不到源码检出，改做文本级检查（YAML 语法留给 dsh 自己启动时验证）')
+}
+/** preset 里用 `!!js process.platform === 'win32'` 这类表达式，标准 schema 不认。 */
+const schema = yaml === undefined ? undefined : yaml.DEFAULT_SCHEMA.extend([
   new yaml.Type('tag:yaml.org,2002:js', { kind: 'scalar' }),
   new yaml.Type('tag:yaml.org,2002:js', { kind: 'sequence' }),
   new yaml.Type('tag:yaml.org,2002:js', { kind: 'mapping' }),
 ])
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
 
 const options = parseCommonArgs(process.argv.slice(2), 'validate-presets')
 const presets = options.presets.length > 0 ? options.presets : discoverPresets()
@@ -67,8 +87,57 @@ function collectPresets(doc) {
   return found
 }
 
+//update-begin---author:admin ---date:2026-10-26  for：【bug】没有源码检出时（桌面版）退化成文本检查：profile 补丁里每个 `- id: preset-*` 块内必须有 compact-agents 行、路径存在且指向本项目、阈值可读-----------
+/**
+ * 文本级检查（无 js-yaml 时用）：按缩进切出每个 preset 块，块内找 compaction 组。
+ *
+ * 与 YAML 那条路查的是同一组事实，只是不解析语法 —— 语法错误由 dsh 启动时自己报，
+ * 而"行在不在、指向谁"是文本就能答的。
+ * @param file - 待检查文件。
+ * @param label - 报告用的短标签。
+ */
+function checkByText(file, label) {
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+  const rowIds = lines
+    .map(line => /^\s*- id: (preset-\S+)\s*$/.exec(line)?.[1])
+    .filter(Boolean)
+  const blocks = rowIds.length === 0 ? [{ id: '(top-level)', start: 0, end: lines.length }] : rowIds.map(id => ({ id, ...findBlock(lines, id) }))
+  for (const block of blocks) {
+    if (block.start === undefined || block.start < 0) continue
+    const slice = lines.slice(block.start, block.end)
+    if (!slice.some(line => /^\s*- id: compaction\s*$/.test(line))) {
+      console.log('SKIP ' + label + ' :: ' + block.id + ' (没有 compaction 组 —— 该 preset 不压缩，正常)')
+      continue
+    }
+    const at = slice.findIndex(line => /^\s*- id: compact-agents\s*$/.test(line))
+    if (at < 0) throw new Error(block.id + ': compaction 组内缺少 ' + ROW_ID + ' 行 —— 重跑 node scripts/install.mjs')
+    const entryLine = slice[at + 1] ?? ''
+    const entryName = /^\s*name:\s*'?([^'\n]+)'?\s*$/.exec(entryLine)?.[1]?.trim()
+    if (entryName === undefined || entryName === '') throw new Error(block.id + ': ' + ROW_ID + ' 行没有可读的 name')
+    const entryPath = /^file:\/\//i.test(entryName) ? fileURLToPath(entryName) : entryName
+    if (!fs.existsSync(entryPath)) throw new Error(block.id + ': 引用的文件不存在: ' + entryName)
+    if (entryPath.replace(/\\/g, '/') !== PLUGIN_ENTRY) throw new Error(block.id + ': 引用的不是本项目入口: ' + entryName)
+    const thresholds = slice.join('\n')
+    checked += 1
+    console.log(label + ' :: ' + block.id)
+    console.log('  thresholdRatio = ' + /thresholdRatio:\s*([0-9.]+)/.exec(thresholds)?.[1]
+      + '  retainRatio = ' + /retainRatio:\s*([0-9.]+)/.exec(thresholds)?.[1])
+    console.log('  ' + ROW_ID + ' -> ' + entryName + ' (存在)')
+  }
+}
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
+
 for (const file of presets) {
   const label = file.replace(DSH_HOME + '\\', '').replace(DSH_HOME + '/', '')
+  if (yaml === undefined) {
+    try {
+      checkByText(file, label)
+    } catch (error) {
+      failed += 1
+      console.log('FAIL ' + label + ': ' + error.message)
+    }
+    continue
+  }
   try {
     const doc = yaml.load(fs.readFileSync(file, 'utf8'), { schema })
     if (!Array.isArray(doc)) throw new Error('顶层不是列表')
@@ -116,6 +185,13 @@ for (const file of presets) {
 if (options.presets.length === 0) {
   const declared = new Set()
   for (const file of presets) {
+    if (yaml === undefined) {
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/^\s*- id: (preset-\S+)\s*$/gm)) {
+        declared.add(match[1])
+        declared.add(match[1].replace(/^preset-/, ''))
+      }
+      continue
+    }
     try {
       const doc = yaml.load(fs.readFileSync(file, 'utf8'), { schema })
       for (const preset of collectPresets(doc)) {
@@ -126,7 +202,11 @@ if (options.presets.length === 0) {
       // 上面的遍历已经就同一份文件报过 FAIL，这里不重复计数。
     }
   }
-  for (const preset of listShippedPresets(DSH_CHECKOUT)) {
+  //update-begin---author:admin ---date:2026-10-26  for：【bug】随包清单同样改从运行时读（打包安装里在 app.asar 内）-----------
+  const shippedList = DSH_RUNTIME === undefined ? [] : listShippedPresets(DSH_RUNTIME)
+  if (DSH_RUNTIME === undefined) console.log('SKIP 随包 preset 完整性：找不到 DSH 运行时（--dsh 指定）')
+  //update-end---author:admin ---date:2026-10-26  for：【bug】-----------
+  for (const preset of shippedList) {
     if (declared.has(preset.name) || declared.has(preset.rowId)) continue
     failed += 1
     console.log('FAIL preset-' + preset.name + ': 随包 preset 没有被 profile 覆盖 —— 选到该预设的会话没有 '

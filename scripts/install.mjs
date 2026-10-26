@@ -18,7 +18,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { DSH_HOME, PLUGIN_ENTRY, PLUGIN_ENTRY_URL, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets, resolveDshCheckout } from './lib/presets.mjs'
+import { DSH_HOME, PLUGIN_ENTRY, PLUGIN_ENTRY_URL, PROJECT_ROOT, ROW_ID, GROUP_ID, discoverPresets, isDshCheckout, resolveDshCheckout, resolveDshRuntime } from './lib/presets.mjs'
 import {
   DEFAULT_RETAIN_RATIO,
   DEFAULT_THRESHOLD_RATIO,
@@ -266,31 +266,62 @@ function patchPreset(file, entry, dryRun, force) {
 }
 
 const options = parseArgs(process.argv.slice(2))
-const dsh = resolveDshCheckout(options.dsh)
+//update-begin---author:admin ---date:2026-10-26  for：【bug】桌面版（Electron）把 DSH 打进 resources/app.asar，没有任何"检出"可指：junction 无处可建、`dsh plugin add` 会被 "profile is managed exclusively by the Electron application" 拒掉。这种安装下只做能做的两件事（profile 登记 + preset 覆盖），其余降级为提示-----------
+let dsh
+try {
+  dsh = resolveDshCheckout(options.dsh)
+} catch (error) {
+  dsh = undefined
+  console.log(`note         ${error instanceof Error ? error.message : String(error)}`)
+  console.log('note         按"打包安装"处理：跳过 junction 与 dsh plugin add，只做 profile 登记与 preset 覆盖')
+}
+const runtime = (() => {
+  try {
+    return resolveDshRuntime(options.dsh ?? dsh)
+  } catch (error) {
+    console.log(`note         ${error instanceof Error ? error.message : String(error)}`)
+    return undefined
+  }
+})()
+const packaged = dsh === undefined || !isDshCheckout(dsh)
 
-console.log(`dsh checkout : ${dsh}`)
+console.log(`dsh checkout : ${dsh ?? '(无 — 打包安装)'}`)
+console.log(`dsh runtime  : ${runtime ?? '(未找到)'}`)
+//update-begin---author:admin ---date:2026-10-26  for：【bug】脚本用系统 node 跑，没有"当前跑的运行时"这条线索，会优先认仓库里的检出联接；与运行时不是同一套时，生成的覆盖会按**另一个 DSH 版本**的 preset 来写（本机 dev 检出与打包版已漂移）-----------
+if (runtime !== undefined && dsh !== undefined
+  && !runtime.replace(/\\/g, '/').startsWith(dsh.replace(/\\/g, '/'))) {
+  console.log('note         ⚠ 上面这份覆盖按 dsh runtime 的随包 preset 生成，与 dsh checkout 不是同一套；')
+  console.log('note           如果你实际跑的是桌面版（打包安装），请加 --dsh <安装目录>/resources/app.asar/dsh')
+}
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
 console.log(`dsh home     : ${DSH_HOME}`)
 console.log(`plugin entry : ${PLUGIN_ENTRY}`)
 console.log(`mode         : ${options.dryRun ? 'dry-run' : 'apply'}`)
 console.log('')
 
-console.log('junctions:')
-console.log('  ' + ensureJunction(
-  path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'),
-  path.join(dsh, 'packages/core/tools'),
-  options.dryRun,
-))
-console.log('  ' + ensureJunction(
-  path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/cordis'),
-  path.join(dsh, 'vendor/cordis'),
-  options.dryRun,
-))
-// 设置面要用 schemastery 声明命名空间的 schema（动态 import，缺了只会少一个设置页，不会让插件挂掉）。
-console.log('  ' + ensureJunction(
-  path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/schemastery'),
-  path.join(dsh, 'vendor/schemastery'),
-  options.dryRun,
-))
+if (dsh !== undefined) {
+  console.log('junctions:')
+  console.log('  ' + ensureJunction(
+    path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'),
+    path.join(dsh, 'packages/core/tools'),
+    options.dryRun,
+  ))
+  console.log('  ' + ensureJunction(
+    path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/cordis'),
+    path.join(dsh, 'vendor/cordis'),
+    options.dryRun,
+  ))
+  // 设置面要用 schemastery 声明命名空间的 schema（动态 import，缺了只会少一个设置页，不会让插件挂掉）。
+  console.log('  ' + ensureJunction(
+    path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/schemastery'),
+    path.join(dsh, 'vendor/schemastery'),
+    options.dryRun,
+  ))
+} else {
+  console.log('junctions:')
+  console.log('  skip     打包安装：插件自己的产物（index.js / lib / settings.js / scripts）就在安装目录里，不需要联接检出')
+}
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
 
 // ── preset 覆盖：逐份，而不是"文件里第一个 compaction 组" ──────────────────────
 // 显式 --preset 仍走老的文件级补行（兼容 0.1.6 那种独立 agent.cordis.yml）。
@@ -302,7 +333,8 @@ if (options.presets.length > 0) {
   console.log(`presets (${options.presets.length}) [explicit]:`)
   for (const file of options.presets) console.log('  ' + patchPreset(file, PLUGIN_ENTRY, options.dryRun, options.force))
 } else {
-  const shipped = listShippedPresets(dsh)
+  //update-begin---author:admin ---date:2026-10-26  for：【bug】随包 preset 清单改从**运行时**读（打包安装里在 app.asar 内），不再只看检出；两者漂移时以运行时为准-----------
+  const shipped = runtime === undefined ? [] : listShippedPresets(runtime)
   const profilePatch = path.join(DSH_HOME, 'profiles', options.profile, 'cordis.patch.yml')
   if (shipped.length === 0 || !fs.existsSync(profilePatch)) {
     // 老版本 DSH（跟随包 preset 目录）或还没建 profile：回退到"逐个文件补行"。
@@ -362,7 +394,11 @@ console.log('')
 console.log(`profile bundle (${options.profile}):`)
 // 官方通道优先：`dsh plugin add` 会把 dependencies、bundles 与实际安装一次做完。
 // dry-run 不跑外部命令（预演不该有副作用），`--no-cli` 可以完全跳过它。
-if (options.cli && !options.dryRun) {
+if (packaged) {
+  //update-begin---author:admin ---date:2026-10-26  for：【bug】桌面版的 profile 由 Electron 独占（`dsh plugin add` 直接拒绝），安装走插件页/市场；这里只补登记，不跑官方通道-----------
+  console.log('  note     打包安装：插件由「侧栏 → 插件」或市场安装，profile 由 Electron 独占管理 —— 跳过 dsh plugin add')
+  //update-end---author:admin ---date:2026-10-26  for：【bug】-----------
+} else if (options.cli && !options.dryRun) {
   const official = tryOfficialInstall(PROJECT_ROOT, options.profile)
   console.log('  ' + (official.ok
     ? 'ok       dsh plugin add（官方通道已完成依赖与 bundle 登记）'
@@ -370,11 +406,14 @@ if (options.cli && !options.dryRun) {
 } else {
   console.log(`  note     跳过 dsh plugin add（${options.dryRun ? 'dry-run' : '--no-cli'}）`)
 }
-console.log('  ' + ensureJunction(
-  path.join(DSH_HOME, 'profiles', options.profile, 'node_modules', 'dsh-compact-agents'),
-  PROJECT_ROOT,
-  options.dryRun,
-))
+const profileLink = path.join(DSH_HOME, 'profiles', options.profile, 'node_modules', 'dsh-compact-agents')
+// 打包安装里本包的实体就在 profile/node_modules 下（市场装的），不能把它改写成一个指向仓库的联接。
+const alreadyInstalled = fs.existsSync(profileLink) && fs.realpathSync(profileLink) !== fs.realpathSync(PROJECT_ROOT)
+if (packaged && alreadyInstalled) {
+  console.log(`  ok       ${profileLink.replace(DSH_HOME, '~/.dsh')}（已由市场/插件页安装，保持不动）`)
+} else {
+  console.log('  ' + ensureJunction(profileLink, PROJECT_ROOT, options.dryRun))
+}
 console.log('  ' + registerProfileDependency(profileManifest, 'dsh-compact-agents', PROJECT_ROOT, options.dryRun))
 console.log('  ' + registerProfileBundle(profileManifest, 'dsh-compact-agents', options.dryRun))
 
@@ -386,3 +425,6 @@ console.log('  3. 重启 dsh —— 宿主组成变了，插件与浏览器 half
 console.log('     重启后：侧栏「插件」→ 找到 dsh-compact-agents → 详情页里有「压缩与自动续写」表单')
 console.log('     （老版本 dsh ≤ 0.1.5 仍在「设置 → 插件 → 可配置」里出现同一张卡片）；')
 console.log('     compact_agents 工具照旧只需新开一条对话（不必重启）。')
+console.log('')
+console.log('进度说明：本脚本只是"离线修一遍"。插件自己也会在每次启动时自愈同一处')
+console.log('（lib/self-heal.js：补 preset 覆盖 + hmr 热重组），所以升级版本后通常不需要再跑它。')

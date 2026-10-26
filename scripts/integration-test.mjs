@@ -180,8 +180,13 @@ check('isConcurrencySafe is a predicate returning false',
   String(def.isConcurrencySafe))
 
 // 真实调度判定：注册表真的把这次调用算成 exclusive（串行），而不是并行组。
-const mode = ctx.tools.executionMode({ name: 'compact_agents', arguments: { scope: 'others' } })
-check('scheduler mode is exclusive', mode.kind === 'exclusive', JSON.stringify(mode))
+// 0.2.1-rc.3 起 ToolRuntime 不再暴露 executionMode，此时如实 SKIP，而不是让整个脚本崩掉。
+if (typeof ctx.tools.executionMode === 'function') {
+  const mode = ctx.tools.executionMode({ name: 'compact_agents', arguments: { scope: 'others' } })
+  check('scheduler mode is exclusive', mode.kind === 'exclusive', JSON.stringify(mode))
+} else {
+  console.log('SKIP scheduler mode — 该 DSH 版本的 ToolRuntime 没有 executionMode（0.2.1-rc.3 起）')
+}
 
 // 3. ToolRuntime 构造期确实问过 systemPrompt（说明真服务起来了，不是空壳）。
 const prompt = ctx.get('systemPrompt')

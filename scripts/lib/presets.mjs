@@ -15,6 +15,136 @@ export const PROJECT_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath
 /** DSH 的 home（`~/.dsh`，可用 DSH_HOME 覆盖）。 */
 export const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
 
+//update-begin---author:admin ---date:2026-10-26  for：【bug】桌面版把 DSH 打在 app.asar 里，脚本与运行时都读不到随包 preset（表现为「升级后插件不生效、只能手跑 install」）；下面这层 fs 抽象让同一个函数既读磁盘也读 asar-----------
+/**
+ * app.asar 归档的头部缓存：`{ header, dataOffset }` 按归档路径记住。
+ *
+ * 打包安装（Electron 桌面版）里 DSH 本体在 `resources/app.asar` 内，随包 preset 就在里面。
+ * **插件运行时**读它没问题（Electron 的 fs 支持 asar 虚拟路径），但 `node scripts/*.mjs`
+ * 用的是系统 node，读到的是"文件不存在"。所以脚本侧要自己解析 asar 头 —— 只读，几十行。
+ */
+const asarHeaders = new Map()
+
+/**
+ * 把一条可能落在 `.asar` 归档内的绝对路径拆成「归档文件」与「归档内相对路径」。
+ * @param target - 绝对路径。
+ * @returns '{ archive, inner }'；不含 `.asar` 段时为 undefined。
+ */
+function splitAsarPath(target) {
+  const normalized = String(target).replace(/\\/g, '/')
+  const parts = normalized.split('/')
+  const at = parts.findIndex(part => part.toLowerCase().endsWith('.asar'))
+  if (at === -1) return undefined
+  return {
+    archive: parts.slice(0, at + 1).join('/'),
+    inner: parts.slice(at + 1).join('/'),
+  }
+}
+
+/**
+ * 读取一个 asar 归档的头部表（按归档缓存）。
+ * @param archive - 归档文件路径。
+ * @returns '{ header, dataOffset }'。
+ * @throws 归档不存在或头部损坏。
+ */
+function readAsarHeader(archive) {
+  const cached = asarHeaders.get(archive)
+  if (cached !== undefined) return cached
+  const fd = fs.openSync(archive, 'r')
+  try {
+    const size = Buffer.alloc(16)
+    fs.readSync(fd, size, 0, 16, 0)
+    const headerSize = size.readUInt32LE(12)
+    const header = Buffer.alloc(headerSize)
+    fs.readSync(fd, header, 0, headerSize, 16)
+    const parsed = { header: JSON.parse(header.toString('utf8')), dataOffset: 16 + headerSize }
+    asarHeaders.set(archive, parsed)
+    return parsed
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
+ * 在 asar 头部表里按归档内路径找节点。
+ * @param node - 头部表节点。
+ * @param inner - 归档内相对路径。
+ * @returns 文件/目录节点；找不到为 undefined。
+ */
+function asarNode(node, inner) {
+  let current = node
+  for (const segment of inner.split('/').filter(Boolean)) {
+    if (current?.files === undefined) return undefined
+    current = current.files[segment]
+    if (current === undefined) return undefined
+  }
+  return current
+}
+
+/**
+ * 路径是否存在（文件或目录）—— 磁盘与 asar 归档都认。
+ * @param target - 绝对路径。
+ * @returns 存在则为 true。
+ */
+export function exists(target) {
+  if (fs.existsSync(target)) return true
+  const split = splitAsarPath(target)
+  if (split === undefined) return false
+  try {
+    return asarNode(readAsarHeader(split.archive).header, split.inner) !== undefined
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 读一个文本文件 —— 磁盘与 asar 归档都认。
+ * @param target - 绝对路径。
+ * @returns 文件全文；读不了时抛出。
+ */
+export function readText(target) {
+  try {
+    return fs.readFileSync(target, 'utf8')
+  } catch (error) {
+    const split = splitAsarPath(target)
+    if (split === undefined) throw error
+    const { header, dataOffset } = readAsarHeader(split.archive)
+    const node = asarNode(header, split.inner)
+    if (node === undefined || node.files !== undefined) throw error
+    const fd = fs.openSync(split.archive, 'r')
+    try {
+      const buffer = Buffer.alloc(node.size)
+      fs.readSync(fd, buffer, 0, node.size, dataOffset + Number(node.offset))
+      return buffer.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+}
+
+/**
+ * 列出一个目录下的条目名 —— 磁盘与 asar 归档都认。
+ * @param target - 目录绝对路径。
+ * @returns '{ name, directory }' 列表；目录不存在时为空数组。
+ */
+export function listEntries(target) {
+  try {
+    return fs.readdirSync(target, { withFileTypes: true })
+      .map(entry => ({ name: entry.name, directory: entry.isDirectory() }))
+  } catch {
+    const split = splitAsarPath(target)
+    if (split === undefined) return []
+    try {
+      const node = asarNode(readAsarHeader(split.archive).header, split.inner)
+      if (node?.files === undefined) return []
+      return Object.entries(node.files).map(([name, child]) => ({ name, directory: child.files !== undefined }))
+    } catch {
+      return []
+    }
+  }
+}
+//update-end---author:admin ---date:2026-10-26  for：【bug】-----------
+
 /** 插件入口的绝对路径（正斜杠）—— 只用于本地文件比较，不要直接写进 preset 行。 */
 export const PLUGIN_ENTRY = path.join(PROJECT_ROOT, 'index.js').split(path.sep).join('/')
 
@@ -138,6 +268,136 @@ export function resolveDshCheckout(explicit) {
 }
 
 /**
+ * 一个目录是不是 DSH **运行时根**（检出或打包安装都算）。
+ *
+ * 两种布局：
+ * - 检出：`<root>/packages/bundle/<bundle>/presets/*.patch.yml`；
+ * - 打包（Electron 桌面版）：`<root>/node_modules/@deepseek-ai/dsh-web-app/presets/*.patch.yml`，
+ *   而 `<root>` 本身常落在 `resources/app.asar` 内 —— 所以判断必须走 asar 感知的 {@link listEntries}。
+ * @param dir - 待检查目录。
+ * @returns 是运行时根则为 true。
+ */
+export function isDshRuntime(dir) {
+  if (typeof dir !== 'string' || dir === '') return false
+  return isDshCheckout(dir) || shippedPresetDir(dir) !== undefined
+}
+
+/**
+ * 随包 preset 所在目录（打包布局）。
+ * @param runtime - 运行时根。
+ * @returns 目录路径；不是打包布局时为 undefined。
+ */
+function shippedPresetDir(runtime) {
+  const dir = path.join(runtime, 'node_modules/@deepseek-ai/dsh-web-app/presets')
+  return listEntries(dir).length > 0 ? dir : undefined
+}
+
+/**
+ * 定位 DSH **运行时根**：既能是源码检出，也能是打包安装（asar 内）。
+ *
+ * `resolveDshCheckout` 只认检出（它要借 js-yaml 与 vendor），而"随包 preset 在哪儿"
+ * 对这个插件是刚需 —— 桌面版把 preset 封在 app.asar 里，用检出的那套去找会读到**另一个
+ * DSH 版本**的 preset（本机就是这么把子代理工具行写坏的：dev 检出 vs 打包版已经漂移）。
+ * @param explicit - `--dsh` / `$DSH_CHECKOUT` / `$DSH_INSTALL_ANCHOR` 给出的路径。
+ * @returns 运行时根；找不到时抛出。
+ */
+export function resolveDshRuntime(explicit) {
+  const seeds = [
+    explicit,
+    process.env.DSH_INSTALL_ANCHOR,
+    process.env.DSH_CHECKOUT,
+    process.env.DSH_HARNESS,
+    // 打包版把 dsh 根作为 argv 的第二参交给桌面宿主（`… --expose-internals <dsh 根> <profile>`）。
+    typeof process.argv[1] === 'string' ? process.argv[1] : undefined,
+    path.join(PROJECT_ROOT, 'node_modules/@deepseek-ai/dsh-tools'),
+    ...dshLauncherEntries(),
+  ]
+  const profiles = path.join(DSH_HOME, 'profiles')
+  if (fs.existsSync(profiles)) {
+    for (const profile of fs.readdirSync(profiles, { withFileTypes: true })) {
+      seeds.push(path.join(profiles, profile.name, 'node_modules/@deepseek-ai/dsh-tools'))
+    }
+  }
+  seeds.push(
+    path.join(os.homedir(), 'deepseek-harness'),
+    path.join(os.homedir(), 'dy', 'deepseek-harness'),
+    path.join(os.homedir(), 'code', 'deepseek-harness'),
+  )
+  for (const seed of seeds) {
+    if (typeof seed !== 'string' || seed === '') continue
+    let start = seed
+    try {
+      start = fs.realpathSync(seed)
+    } catch {
+      // 不存在就按原样试：可能直接把运行时根传了进来，或它就在 asar 里。
+    }
+    if (isDshRuntime(start)) return start
+    // 从"某个包目录"向上找：检出里 packages/core/tools 往上 3 层就是根。
+    let dir = start
+    for (let depth = 0; depth < 8; depth += 1) {
+      if (isDshRuntime(dir)) return dir
+      const parent = path.dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  }
+  throw new Error(
+    'cannot locate the DSH runtime; pass --dsh <runtime> or set DSH_CHECKOUT / DSH_INSTALL_ANCHOR '
+    + '(a checkout contains packages/core/tools; a packaged install contains node_modules/@deepseek-ai/dsh-web-app/presets)',
+  )
+}
+
+/**
+ * 当前进程正在跑的 profile 目录 —— 由宿主行从 `profileContext.dir` 权威写入。
+ *
+ * 为什么必须记：设置界面里改的 `thresholdRatio` 要落进**正在跑的那个 profile** 的补丁，
+ * 而 `discoverPresets()` 会扫所有 profile（本机有 web 与 desktop 两个，两个都装了本插件）。
+ * 没有这个锚点时它取第一个命中的那个 —— 桌面版里改阈值会静默写进早已不用的 web profile。
+ */
+let activeProfileDir
+
+/**
+ * 记录当前运行中的 profile 目录。
+ * @param dir - profile 目录绝对路径；传 undefined 清除。
+ */
+export function setActiveProfileDir(dir) {
+  activeProfileDir = typeof dir === 'string' && dir !== '' ? dir : undefined
+}
+
+/**
+ * 读回 {@link setActiveProfileDir} 记下的 profile 目录。
+ * @returns profile 目录；没记录过为 undefined。
+ */
+export function getActiveProfileDir() {
+  return activeProfileDir
+}
+
+/**
+ * 从命令行猜当前 profile —— 只作为**模块导入期**的兜底（`client-host.js` 的 `Config`
+ * 默认值在 import 时就算好了，那会儿还拿不到 `profileContext`）。
+ *
+ * 两代启动方式：`dsh --profile <名>`，以及桌面版 `… <dsh 根> <profile 目录>`。
+ * @returns profile 目录绝对路径；猜不出为 undefined。
+ */
+export function profileDirFromArgv() {
+  const argv = process.argv
+  const profilesRoot = path.join(DSH_HOME, 'profiles')
+  const flag = argv.indexOf('--profile')
+  if (flag !== -1 && typeof argv[flag + 1] === 'string' && argv[flag + 1] !== '') {
+    return path.join(profilesRoot, argv[flag + 1])
+  }
+  for (const arg of argv.slice(1)) {
+    if (typeof arg !== 'string' || !path.isAbsolute(arg)) continue
+    // 只认 profiles 下的目录：`--dsh <检出>` 之类的绝对参数也含 package.json，别误认成 profile。
+    if (!arg.replace(/\\/g, '/').startsWith(profilesRoot.replace(/\\/g, '/'))) continue
+    if (!fs.existsSync(path.join(arg, 'cordis.patch.yml'))) continue
+    if (!fs.existsSync(path.join(arg, 'package.json'))) continue
+    return arg
+  }
+  return undefined
+}
+
+/**
  * 一个文件里有没有指定 id 的插件行 —— 用来判断 profile 补丁是不是 0.1.7 那种
  * "preset 声明写在 YAML 里"的形态（那时 `- id: compaction-basic` 会作为插件行出现在补丁中）。
  * @param file - 待检查的文件。
@@ -169,6 +429,13 @@ function declaresRow(file, rowId) {
  * @returns 找到的 preset 文件路径列表（可能为空）。
  */
 export function discoverPresets() {
+  //update-begin---author:admin ---date:2026-10-26  for：【bug】多 profile 都装本插件时（本机 web + desktop），旧逻辑返回第一个命中的补丁 —— 桌面版里在设置界面改阈值会静默写进早已不用的 web profile。当前 profile 有权威来源（宿主行传 profileContext.dir，导入期用 argv 猜）就只认它-----------
+  const active = activeProfileDir ?? profileDirFromArgv()
+  if (active !== undefined) {
+    const patch = path.join(active, 'cordis.patch.yml')
+    if (declaresRow(patch, 'compaction-basic')) return [patch]
+  }
+  //update-end---author:admin ---date:2026-10-26  for：【bug】-----------
   const current = []
   const profilesDir = path.join(DSH_HOME, 'profiles')
   if (fs.existsSync(profilesDir)) {

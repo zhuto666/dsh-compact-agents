@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.9.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -20,19 +20,25 @@ Force compaction that ignores the automatic threshold · covers every live sessi
 
 ## Installation
 
-> Requires Node.js ≥ 20, `pnpm` on PATH, and a DeepSeek Harness **source checkout** with `agent-presets` (the installer uses it to locate `@deepseek-ai/dsh-tools` and `cordis`; a global `npm i -g` layout is unverified).
+> Requires Node.js ≥ 20 and a DeepSeek Harness with `agent-presets`. **Both a source checkout and the desktop build (packed inside `app.asar`) are supported**; the desktop build manages its profile exclusively through Electron, so install the plugin from the sidebar's Plugins page or the marketplace there.
 
-Installation has two steps: install the package (the official channel — pnpm fetches it from GitHub), then write the mount row into a preset. The second step is not optional: the `compact_agents` tool must sit inside the preset's `compaction` isolation group to reach `ctx.compaction`, and no package can ship that row itself.
+Installing the package and writing the mount row into a preset are two separate things: the `compact_agents` tool must sit inside the preset's `compaction` isolation group to reach `ctx.compaction`, and no package can ship that row itself.
+
+**Installing the package is enough**: the plugin heals that row by itself on its first start (`lib/self-heal.js` — it checks on every start, fills in what is missing, then reconciles through hmr, so a new conversation picks it up). Updating from the community is therefore a single action; no script to remember.
 
 ```sh
-# 1. Install the package: registers the profile dependency and bundle (the browser half, i.e. the Settings form)
+# official channel: registers the profile dependency and bundle (the browser half, i.e. the Settings form)
 dsh plugin --profile web add github:zhuto666/dsh-compact-agents
-
-# 2. Mount the preset row: the tool itself + path self-healing (idempotent, safe to re-run)
-node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 ```
 
-Replace `--profile web` with the profile you actually boot; `dsh plugin` forwards the remaining arguments to `pnpm` inside that profile directory. Add `--dry-run` to step 2 to preview the changes without writing anything.
+Replace `--profile web` with the profile you actually boot; `dsh plugin` forwards the remaining arguments to `pnpm` inside that profile directory. On the desktop build, just install it from the Plugins page.
+
+To run the heal **now** instead of at the next start (or to preview the diff first), use the offline version:
+
+```sh
+# idempotent; --dry-run previews without writing
+node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
+```
 
 `<profile-dir>` is that profile's directory, by default `~/.dsh/profiles/<profile>`. `~` is expanded only on macOS, Linux and Git Bash, so those can copy the form as-is; Windows PowerShell and cmd do not expand it — write the full path instead, e.g. `<your home directory>\.dsh\profiles\web\node_modules\dsh-compact-agents\scripts\install.mjs`.
 
@@ -44,9 +50,10 @@ dsh plugin --profile web add /absolute/path/to/dsh-compact-agents
 node scripts/install.mjs
 ```
 
-`install.mjs` is idempotent and does four things in order: create the `node_modules/@deepseek-ai/{dsh-tools,cordis,schemastery}` junctions → append the mount row to every preset that has a `compaction` group (repointing it when the path changed) → write the package name into both the profile `dependencies` and `dsh.profile.bundles` → call the official channel `dsh plugin add` (`--no-cli` skips it). When no preset is found at all, pass `--preset <agent.cordis.yml>` explicitly.
+`install.mjs` is idempotent and adapts to the installation shape: on a **source checkout** it creates the `node_modules/@deepseek-ai/{dsh-tools,cordis,schemastery}` junctions → overwrites the presets → registers the profile dependency and bundle → calls the official channel `dsh plugin add` (`--no-cli` skips it); on the **desktop build** there is no checkout to point at and the profile belongs to Electron, so it skips the junctions and `dsh plugin add` and only does the preset overwrite plus registration. When no preset is found at all, pass `--preset <agent.cordis.yml>` explicitly.
 
-> The preset mount row holds an **absolute path**: a bare package name inside a preset resolves from the harness installation, not from a user directory, so a package living there can never be found. Move or rename the project and re-running `install.mjs` fixes the path automatically.
+> The preset mount row holds an **absolute path**: a bare package name inside a preset resolves from the harness installation, not from a user directory, so a package living there can never be found. Move or rename the project and the heal repoints that row to the current install location (or re-run `install.mjs`).
+
 
 ## What problem it solves
 
@@ -204,24 +211,27 @@ Tuning cheat sheet (mechanism and trade-offs: [design notes §9](docs/design.md)
 | Symptom | Cause | Fix |
 |---|---|---|
 | No 「压缩与自动续写」 in Settings | `dsh` was not restarted after installing; a client module's rev is computed only at startup | restart `dsh` once |
+| The form opens, but the `compact_agents` tool is gone and nothing is announced | the preset override block never reached the **current** profile (most likely with several profiles installed: it went into another one) | the plugin heals this on every start — look for `compact-agents: 已自动修复 preset 覆盖` in the log. If it still does not work, run `scripts/install.mjs` once and restart |
+| Nothing works at all on the desktop build (an `E:\DeepSeek`-style packed install) | the shipped presets live inside `resources/app.asar`, which the old script could not read through a source checkout | fixed in 0.10.0 (both the script and the heal read `app.asar`); update the plugin and restart |
 | The form is there, but the package is missing from the Plugins page | the name was written only into `dsh.profile.bundles`, not into the profile `dependencies` — the Plugins page lists only bundles in `installed \|\| optional \|\| error`, and reports nothing | re-run `scripts/install.mjs` (it writes both), then restart; `validate-presets.mjs` flags this half-installed state as FAIL |
 | Neither the namespace nor the form appears, with no error at all | only the preset was mounted, the package was never registered as a profile bundle — the browser never receives `lib/client.js` | same as above ([§8.4](docs/design.md)) |
 | On the old Settings page (DSH ≤ 0.1.5) the card vanishes silently | the old `settings.plugin.item` slot has no renderer on ≥ 0.1.6, and `slots.inject` is silent for a slot nobody declared: registering neither throws nor shows | use Settings → 「压缩与自动续写」 or the Plugins-page detail page; do not rely on the old slot ([§8.5](docs/design.md)) |
 | The preset file has a new threshold but the session still compacts by the old one | hot sync did not get through (config shape changed / not writable); the notice reports both values | only a new conversation picks up the new value ([§6](docs/design.md)) |
 | The compaction notice says "a new conversation is needed for the new value" | self-verification found the engine still judging by the old threshold (the evidence is the next compaction the policy decides by itself) | same as above |
-| After upgrading `@linxin666/*` the `compact_agents` tool is gone | the shipped preset is rewritten wholesale by its own upgrade, dropping our mount row | re-run `scripts/install.mjs`; `validate-presets.mjs` tells you which preset it was |
-| Your own preset edit has no effect | a shipped preset with the same id shadows the user preset (`agent-presets` roots order: shipped first, user last) | edit the shipped one (and re-run the installer after the next upgrade), or give your own preset another id |
+| After upgrading `@linxin666/*` the `compact_agents` tool is gone | the shipped preset is rewritten wholesale by its own upgrade, dropping our mount row | the start-up heal puts it back; you can also re-run `scripts/install.mjs` — `validate-presets.mjs` tells you which preset it was |
+| Your own preset edit has no effect | a shipped preset with the same id shadows the user preset (`agent-presets` roots order: shipped first, user last) | edit the shipped one (the heal keeps the rows and thresholds you added by hand), or give your own preset another id |
 | Turning the plugin off on the Plugins page leaves `compact_agents` usable | that switch only moves the bundle row in the host composition; the tool comes from the preset row | to disable it entirely, run `scripts/uninstall.mjs` |
 
 ## Update / uninstall
+
+**Updating is one action: install the new version.** On start the plugin refreshes the preset overrides against the new shipped presets (new presets, new plugin rows, and the thresholds you tuned are all taken care of), then reconciles through hmr — a new conversation picks it up.
 
 ```sh
 # source checkout
 git -C <checkout> pull && node scripts/install.mjs
 
-# installed from GitHub: pnpm re-resolves the git dependency, then re-apply the mount row
+# installed from GitHub
 dsh plugin --profile web update dsh-compact-agents
-node <profile-dir>/node_modules/dsh-compact-agents/scripts/install.mjs
 
 # uninstall (preview with --dry-run first)
 node <plugin-dir>/scripts/uninstall.mjs
@@ -245,7 +255,7 @@ This document keeps the conclusions; root causes, contract references, the pitfa
 | Settings surface: the host-composition row (§8.4), the two silent failures (§8.5), known limitations (§8.6), why it has its own page (§8.7) | [§8](docs/design.md) |
 | How the compaction parameters work and how to tune them | [§9](docs/design.md) |
 
-Code layout: `index.js` (preset row entry: registers the tool and the session listeners), `client-host.js` + `cordis.patch.yml` (host-composition row entry: ships the browser half and registers the settings namespace), `settings.js` (settings namespace plus preset parameter reads and writes), `lib/client.js` (the browser half, a single hand-written file with no build step, and the single source of truth for UI wording), `scripts/*` (install / uninstall / verify / test).
+Code layout: `index.js` (preset row entry: registers the tool and the session listeners), `client-host.js` + `cordis.patch.yml` (host-composition row entry: ships the browser half, registers the settings namespace, schedules the heal), `settings.js` (settings namespace plus preset parameter reads and writes), `lib/self-heal.js` (start-up heal: fills the mount rows into the current profile's preset overrides and reconciles them), `lib/client.js` (the browser half, a single hand-written file with no build step, and the single source of truth for UI wording), `scripts/*` (install / uninstall / verify / test).
 
 Development:
 
@@ -266,13 +276,31 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 - **`scope: "self"` is asynchronous**: the tool returns `queued` immediately, the actual compaction happens after the current turn ends, and the result goes to the DSH log rather than the tool result.
 - **Already-composed sessions do not get the new tool**: a preset change only affects new sessions; older sessions need a new conversation (a restart drops member sessions).
 - **No orphan-data / state cleanup**: the plugin is stateless (zero persistence, zero network, does not change the automatic compaction policy).
-- **DSH development-checkout layout only**: the installer requires both `packages/core/tools` and `vendor/cordis` inside the checkout; a global `npm i -g` layout is unverified.
+- **The heal only guarantees "fixed before the next start"**: it is scheduled from `apply()` and runs about two seconds later; where no `hmr` service is available (e.g. direct callers other than a profiled `dsh` boot) it only writes the file, so the change lands on the next start, and the log says so.
 - **The Plugins-page enable / disable switch only covers the browser half**: turning it off moves the host-composition row (`compact-agents-client-host`) and the form disappears; the `compact_agents` tool comes from the preset row and keeps working, independently of that switch.
-- **A shipped preset is wiped by its own plugin upgrade**: whether it is the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` or an override block `- id: preset-<shipped name>` in the profile patch, it is written at install time; a plugin upgrade rewrites it wholesale, and a DSH upgrade can add new presets. Re-running `scripts/install.mjs` fixes it — it covers **every** shipped preset found in the checkout, and `validate-presets.mjs` FAILs on any that is left out. The same place has one more shadowing rule: a shipped preset with the same id overrides a user-built one.
+- **A shipped preset is wiped by its own plugin upgrade**: whether it is the row in `<profile>/node_modules/@linxin666/*/presets/*/agent.cordis.yml` or an override block `- id: preset-<shipped name>` in the profile patch, it is written at install time; a plugin upgrade rewrites it wholesale, and a DSH upgrade can add new presets. **The start-up heal re-covers every shipped preset found in the running runtime** (keeping the rows you added by hand and the thresholds you tuned), so normally you do nothing; `validate-presets.mjs` FAILs on any that is left out. The same place has one more shadowing rule: a shipped preset with the same id overrides a user-built one.
 
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.10.0 — 2026-10-26
+
+**New behaviour: updating heals itself, no installer to run**
+
+- On every start (including a restart after updating from the community) the plugin checks whether the current profile mounts it inside the `compaction` group of every shipped preset, fills in whatever is missing, then reconciles through `hmr.reconcileProfile()` — a new conversation picks it up, with no command to run at all.
+- The heal only adds: each shipped preset gets a full override block (the `compact-agents` row plus default thresholds), while **a `thresholdRatio` / `retainRatio` you tuned and any row you added by hand are kept**; user-built presets only get the missing rows, never a rebuild.
+
+**Fixed**
+
+- **Nothing worked at all on the desktop build (DSH packed inside `resources/app.asar`)**: the shipped-preset list was read from a source checkout only, which a packed install cannot answer (or answers with **another DSH version's** presets, whose override would break tool rows). Both the scripts and the runtime now read `app.asar` directly, and `listShippedPresets()` follows the runtime that is actually running.
+- **Settings silently written into the wrong profile when several exist**: `discoverPresets()` used to return the first matching profile patch — with both `web` and `desktop` having the plugin installed, changing a threshold on the desktop app wrote into the long-unused `web`. The running profile now wins (`profileContext.dir`, with an argv fallback at import time).
+- **The installer could not run on the desktop build**: `dsh plugin add` refuses an Electron-owned profile and there is no checkout to point junctions at. The script now detects a packed install and only does what applies (preset overwrite + profile registration) instead of failing out.
+- `validate-presets.mjs` no longer crashes on a machine without a source checkout; it degrades to a text-level check.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched. One `dsh` restart is still needed after updating (the host composition changed); new conversations work after that.
 
 ### 0.9.1 — 2026-10-17
 

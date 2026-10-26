@@ -12,8 +12,8 @@
  * 序列化会把它们全部毁掉。
  * @module scripts/lib/preset-overrides
  */
-import fs from 'node:fs'
 import path from 'node:path'
+import { listEntries, readText } from './presets.mjs'
 
 /** 随包 preset 的默认阈值（与历史上手工覆盖的取值一致）。 */
 export const DEFAULT_THRESHOLD_RATIO = 0.3
@@ -32,29 +32,40 @@ const OUR_COMMENT = 'dsh-compact-agents'
 const SAFE_SKILLS_EXPR = "(() => { try { return [process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(process.argv[1]).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')] } catch { return [] } })()"
 
 /**
- * 列出 DSH 检出里所有随包 preset（packages/bundle/<bundle>/presets/*.patch.yml）。
- * @param checkout - DSH 检出根。
+ * 列出 DSH 运行时里所有随包 preset。
+ *
+ * **两种布局都要认**（这是"升级后自动生效"的关键）：
+ * - 源码检出：`<runtime>/packages/bundle/<bundle>/presets/*.patch.yml`；
+ * - 打包安装（Electron 桌面版）：`<runtime>/node_modules/@deepseek-ai/dsh-web-app/presets/*.patch.yml`，
+ *   而 `<runtime>` 常落在 `resources/app.asar` 内 —— 读盘要用 asar 感知的 {@link readText}。
+ *
+ * 只认检出的话，桌面版用户的随包清单会来自**另一个 DSH 版本**（本机 dev 检出与打包版
+ * 已经漂移：打包版 standard 多一行 `tool-subagent-list-agents`），照它生成的覆盖会把
+ * 工具行写坏，而且两份 preset 的 plugin 列表不会再随宿主升级刷新。
+ * @param runtime - DSH 运行时根。
  * @returns '{ rowId, name, file, text }' 列表；目录不存在时为空。
  */
-export function listShippedPresets(checkout) {
-  const bundles = path.join(checkout, 'packages', 'bundle')
-  if (!fs.existsSync(bundles)) return []
+export function listShippedPresets(runtime) {
+  const dirs = []
+  const bundles = path.join(runtime, 'packages', 'bundle')
+  for (const entry of listEntries(bundles)) {
+    if (entry.directory) dirs.push(path.join(bundles, entry.name, 'presets'))
+  }
+  dirs.push(path.join(runtime, 'node_modules/@deepseek-ai/dsh-web-app/presets'))
   const found = []
-  for (const bundle of fs.readdirSync(bundles, { withFileTypes: true })) {
-    if (!bundle.isDirectory()) continue
-    const presetsDir = path.join(bundles, bundle.name, 'presets')
-    if (!fs.existsSync(presetsDir)) continue
-    for (const entry of fs.readdirSync(presetsDir)) {
-      if (!entry.endsWith('.patch.yml')) continue
-      const file = path.join(presetsDir, entry)
+  for (const dir of dirs) {
+    for (const entry of listEntries(dir)) {
+      if (entry.directory || !entry.name.endsWith('.patch.yml')) continue
+      const file = path.join(dir, entry.name)
       let text
       try {
-        text = fs.readFileSync(file, 'utf8')
+        text = readText(file)
       } catch {
         continue
       }
       const match = /- id: (preset-\S+)/.exec(text)
       if (match === null) continue
+      if (found.some(item => item.rowId === match[1])) continue
       found.push({ rowId: match[1], name: match[1].replace(/^preset-/, ''), file, text })
     }
   }
