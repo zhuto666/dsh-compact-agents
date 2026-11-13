@@ -312,6 +312,34 @@ bundleExports.apply(ctx)
 check('apply binds the compact-agents-client-host profile entry（0.1.7 起表单按 entry id 认领，不是 settings 命名空间）',
   boundSpecs.length === 1 && boundSpecs[0] === 'compact-agents-client-host',
   JSON.stringify(boundSpecs))
+
+// ---------------------------------------------------------------------------
+// 3b. 市场体检按**纯文本**扫 bundle：注释里多写一个命名空间也会被当成真实读取。
+//     扫描规则照抄 dshmarket/lib/verify.js 的 configFormNamespaces()（正则 + 一层常量
+//     传播、不跳注释）—— 这条断言存在的理由就是它：运行时读对了也仍然会被报。
+// ---------------------------------------------------------------------------
+
+/** 一个值像不像 loader entry id（dshmarket 的 plainNamespace 同款判据）。 */
+function plainEntryId(value) {
+  return value !== '' && value.length <= 200 && !value.includes('\\') && /^[\w@/.:-]+$/u.test(value)
+    ? value
+    : null
+}
+
+const namespaceConstants = new Map()
+for (const match of bundleSource.matchAll(/(?:^|[^\w$.])(?:var|let|const)?\s*([A-Za-z_$][\w$]*)\s*=\s*(['"])([^'"\\\n]*)\2/gu)) {
+  const plain = plainEntryId(match[3])
+  namespaceConstants.set(match[1], namespaceConstants.has(match[1]) || plain === null ? null : plain)
+}
+const requestedNamespaces = new Set()
+for (const match of bundleSource.matchAll(/configForms\s*\.\s*get\s*\(\s*(?:([A-Za-z_$][\w$]*)|(['"])([^'"\\\n]*)\2)\s*\)/gu)) {
+  const plain = plainEntryId(match[3] ?? '') ?? namespaceConstants.get(match[1]) ?? null
+  if (plain !== null) requestedNamespaces.add(plain)
+}
+check('bundle 文本里只有宿主 entry id 一个配置命名空间（注释里写错也会被市场报成没人提供）',
+  requestedNamespaces.size === 1 && requestedNamespaces.has('compact-agents-client-host'),
+  [...requestedNamespaces].join(', '))
+
 /** 按槽位名找一条注册（三个宿主各一条）。 */
 const regBySlot = name => registrations.find(entry => entry.options?.name === name)
 const cardReg = regBySlot('settings.plugin.item')

@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.10.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,16 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.10.1 — 2026-11-13
+
+**修复**
+
+- **插件市场体检误报「客户端请求了没人提供的配置命名空间 `compact-agents`」**：插件市场的健康检查是按**纯文本正则**扫浏览器 half 那份 bundle 的（不跳注释、还把局部常量按赋值解一层），而 `lib/client.js` 一条 JSDoc 里留着旧命名空间的调用示例 —— 扫描器把它当成真实读取。实际读法一直是对的（按宿主 profile 行 id `compact-agents-client-host`），界面与参数也没有异常。已删掉注释里的旧字面量，并在 `client-test.mjs` 加了一条同款正则的守卫：bundle 里再出现第二个命名空间就直接 FAIL。
+
+**不变**
+
+- 工具行为、参数、界面均未改动，装完 / 更新后无需任何设置。运行时读的是 entry id，与这次改动无关。
 
 ### 0.10.0 — 2026-10-26
 

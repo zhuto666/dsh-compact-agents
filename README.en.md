@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.10.0-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,16 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.10.1 — 2026-11-13
+
+**Fixed**
+
+- **The plugin market's health check falsely reported "the client asks for a config namespace `compact-agents` that nothing serves"**: that check is a **plain-text regex scan** over the browser half's bundle (comments are not skipped, and local constants are resolved through one assignment), and a JSDoc comment in `lib/client.js` still carried an example call with the old namespace — the scanner read it as a real lookup. The real lookup was already correct (keyed by the host profile row id `compact-agents-client-host`), and the form and parameters were never affected. The stale literal is gone, and `client-test.mjs` now runs the same regex as a guard: a second namespace in the bundle fails the suite.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched; no setup change after installing or updating. The runtime lookup is by entry id and has nothing to do with this fix.
 
 ### 0.10.0 — 2026-10-26
 

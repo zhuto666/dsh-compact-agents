@@ -604,6 +604,30 @@ profile 补丁的 `config:` 段，再 `reconcileProfilePatches()`。三条推论
    行配置，没存过的是 `undefined`，`applySettings()` 直接跳过。
    `scripts/settings-test.mjs` 的 §4c 钉住这条（把修复拿掉即 FAIL）。
 
+### 8.9 市场体检按**纯文本**扫 bundle：注释里多一个命名空间也会被判"没人提供"（2026-11-13）
+
+现场：插件市场（`dshmarket`）的健康检查报本插件「客户端请求了没人提供的配置命名空间
+`compact-agents`」，并列出它自己的条目 `compact-agents-client-host`；可运行时的读法是对的
+（`apply()` 里 `ctx.configForms.get(ENTRY_ID)`），设置界面并不报错 —— 这条告警来自**静态扫描**。
+
+根因：`dshmarket/lib/verify.js` 的 `configFormNamespaces()` 是**纯文本正则扫描**，不跳注释，
+并且做**一层常量传播**（`const X = '…'` 与 `configForms.get(X)` 配对解值）。本包 `lib/client.js`
+里一条 JSDoc 留了句带旧命名空间字面量的调用示例，扫描器把它当成真实读取。实测该函数：
+`git show HEAD:lib/client.js` → `['compact-agents', 'compact-agents-client-host']`；把那条注释
+改成不含命名空间字面量后 → `['compact-agents-client-host']`。
+
+三条判据（改 `lib/client.js` 前先看）：
+
+1. **bundle 里只准出现一个配置命名空间** —— 宿主 profile 那一行的 id（`ENTRY_ID`）。注释、
+   说明文字里也别写别的名字：市场不区分代码与注释，也不看这段字是不是在解释性文字里。
+2. **被扫的只有 `exports["./client"]` 指向的那份 bundle**（`readClientBundle()`）：改
+   `README.md` / `docs/` 不影响体检结果；反过来，`lib/client.js` 的注释同样算在内。
+3. **"名字写对"与"有没有被提供"是两件事**：`ENTRY_ID` 只有在 profile 里真有那一行时才算被提供。
+   装了包却没写挂载行时这条告警是**真问题**（表单确实读不到），别当误报处理。
+
+守卫：`scripts/client-test.mjs` §3b 照抄同一套正则扫本包 bundle，多出第二个名字即 FAIL ——
+把本条修复拿掉会打印 `compact-agents, compact-agents-client-host` 并失败。
+
 ## 9. 压缩参数的机制与调参取舍
 
 §5 列出了那几个旋钮，§8.2 讲了两类生效机制；这一节补上**它们为什么长这样、调它们各自的代价是什么**。
