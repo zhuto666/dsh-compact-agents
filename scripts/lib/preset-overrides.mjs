@@ -165,7 +165,18 @@ export function buildOverride(preset, options) {
   if (body === null) return null
   const unsafe = body.findIndex(line => line.includes('createRequire(baseUrl)'))
   if (unsafe >= 0) {
-    body[unsafe] = ' '.repeat(indentOf(body[unsafe])) + '- !!js ' + SAFE_SKILLS_EXPR
+    const current = body[unsafe]
+    const previous = body[unsafe - 1] ?? ''
+    // Apply !!js to the entire array, not one item. The old output was:
+    // customSkillDirs: [!!js (() => [path])()] => [[path]], rejected by string[].
+    if (/^\s*- !!js\s/.test(current) && /^\s*customSkillDirs:\s*$/.test(previous)) {
+      body.splice(unsafe - 1, 2, previous.replace(/customSkillDirs:\s*$/, 'customSkillDirs: !!js ' + SAFE_SKILLS_EXPR))
+    } else if (/^\s*customSkillDirs:\s*!!js\s/.test(current)) {
+      body[unsafe] = current.replace(/customSkillDirs:\s*!!js\s.*$/, 'customSkillDirs: !!js ' + SAFE_SKILLS_EXPR)
+    } else {
+      // An unfamiliar upstream layout: do not publish an unvalidated override.
+      return null
+    }
   }
   ensureBasicConfig(body, options.thresholdRatio, options.retainRatio)
   ensureCompactionRow(body, options.entry)
