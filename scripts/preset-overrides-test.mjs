@@ -17,6 +17,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import vm from 'node:vm'
 import {
   DEFAULT_RETAIN_RATIO,
   DEFAULT_THRESHOLD_RATIO,
@@ -192,6 +193,54 @@ const block = buildOverride(ptc, {
 check('rewrites createRequire(baseUrl) to the launcher entry',
   block.join('\n').includes('createRequire(process.argv[1])'), 'rewritten')
 check('never leaves baseUrl behind', !block.join('\n').includes('createRequire(baseUrl)'), 'clean')
+
+// Regression: the generated YAML must tag customSkillDirs itself, not a nested array item.
+// A scalar !!js array nested under customSkillDirs yields Array<Array<string>> and
+// breaks skill-filesystem's string[] schema when Creator Mode mounts the preset.
+const skillLine = block.find(line => /^\s*customSkillDirs:\s*!!js\s/.test(line))
+check('Creator skill directories attach !!js to the array field', skillLine !== undefined)
+if (skillLine !== undefined) {
+  const expression = skillLine.split('!!js ')[1]
+  const evaluate = (resolve) => vm.runInNewContext(expression, {
+    process: {
+      argv: ['node', path.join(sandbox, 'launcher.js')],
+      getBuiltinModule: (name) => {
+        if (name === 'node:path') return path
+        if (name === 'node:module') return { createRequire: () => ({ resolve }) }
+        throw new Error('unknown builtin ' + name)
+      },
+    },
+  })
+  const found = evaluate(() => path.join(sandbox, 'dsh-agent-preset', 'package.json'))
+  check('Creator customSkillDirs evaluates to string[], not nested arrays',
+    Array.isArray(found) && found.length === 1 && found.every(value => typeof value === 'string'))
+  const missing = evaluate(() => { throw new Error('module not found') })
+  check('Creator skill resolution failure yields an empty string[]',
+    Array.isArray(missing) && missing.length === 0)
+  check('Creator skill config does not retain nested !!js items',
+    !block.some(line => /^\s*- !!js .*createRequire\(process.argv\[1\]\)/.test(line)))
+}
+
+// Upstream may eventually emit an inline !!js value instead of a YAML item.
+const inlinePreset = {
+  ...ptc,
+  text: ptc.text.replace(/(\s*customSkillDirs:)\s*\n\s*- !!js /, '$1 !!js '),
+}
+const inlineBlock = buildOverride(inlinePreset, {
+  entry, thresholdRatio: DEFAULT_THRESHOLD_RATIO, retainRatio: DEFAULT_RETAIN_RATIO,
+})
+check('already-inline skill expression is rewritten safely',
+  inlineBlock !== null && inlineBlock.some(line => /^\s*customSkillDirs: !!js /.test(line))
+    && !inlineBlock.join('\n').includes('createRequire(baseUrl)'))
+// Unknown upstream structure must not be written into a live profile.
+const unexpectedPreset = {
+  ...ptc,
+  text: ptc.text.replace('customSkillDirs:', 'otherSkillDirs:'),
+}
+check('unrecognized skill layout fails closed',
+  buildOverride(unexpectedPreset, {
+    entry, thresholdRatio: DEFAULT_THRESHOLD_RATIO, retainRatio: DEFAULT_RETAIN_RATIO,
+  }) === null)
 
 // ── 6) dryRun 不动文本 ────────────────────────────────────────────────────
 const dry = syncOverrides('# empty\n', shipped, {
