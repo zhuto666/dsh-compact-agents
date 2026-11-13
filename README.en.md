@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.10.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,16 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.10.2 — 2026-11-14
+
+**Fixed**
+
+- **The `Standard` and `Cordis` presets showed "Failed to load" in the settings**: the preset override emitted `skill-filesystem.customSkillDirs` as `customSkillDirs:` followed by `- !!js <expression>`, but that expression returns an array — as a list item it became `[[path]]`, while `skill-filesystem`'s schema wants `array(string)`, so the whole preset failed to mount. Only the two presets carrying that row were affected (standard / cordis; minimal / ptc never had it and stayed fine). The expression now sits on the key itself (`customSkillDirs: !!js …`, still `[]` on failure), and `preset-overrides-test.mjs` guards against ever emitting the array-in-a-list-item shape again.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched. Existing installs get the corrected presets from the next start-up self-heal; no manual config edit is needed.
 
 ### 0.10.1 — 2026-11-13
 

@@ -192,6 +192,9 @@ const block = buildOverride(ptc, {
 check('rewrites createRequire(baseUrl) to the launcher entry',
   block.join('\n').includes('createRequire(process.argv[1])'), 'rewritten')
 check('never leaves baseUrl behind', !block.join('\n').includes('createRequire(baseUrl)'), 'clean')
+check('keeps customSkillDirs an array expression on the key, not a list item',
+  block.some(line => /^\s*customSkillDirs: !!js /.test(line))
+  && !block.some(line => /- !!js .*createRequire\(process\.argv\[1\]\)/.test(line)), 'key position')
 
 // ── 6) dryRun 不动文本 ────────────────────────────────────────────────────
 const dry = syncOverrides('# empty\n', shipped, {

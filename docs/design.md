@@ -86,6 +86,10 @@ preset 里含注释与 `!!js` 表达式。用 YAML 反序列化再序列化会�
 
 卸载按同样的行级方式删除，并吞掉多余空行——实测**安装 → 卸载后文件逐字节回到原状**。
 
+### 3.6 `customSkillDirs` 的 `!!js` 表达式必须写在 key 上
+
+随包 preset 里是「`customSkillDirs:`」+「`- !!js <返回**字符串**>`」。本插件把它换成从启动入口解析的表达式（返回**数组**，失败给 `[]`）时，若仍留在列表项里，YAML 得到的是 `customSkillDirs: [[路径]]`，而 `skill-filesystem` 的 schema 是 `z.array(z.string())`（`node_modules/@deepseek-ai/dsh-skill-filesystem/lib/index.js:35`）—— 校验失败会让**整份 preset 挂载失败**，界面只显示「加载失败」，不会指出是哪一行；标准 / 创造两个预设带这一行，极简 / PTC 不带，所以看起来像"只有两个预设坏了"。正确写法是把表达式写在 key 上（`customSkillDirs: !!js <表达式>`），并让 `preset-overrides-test.mjs` 断言「不得再出现列表项形式的数组表达式」。
+
 ## 4. 验证矩阵
 
 | 脚本 | 层次 | 断言要点 |

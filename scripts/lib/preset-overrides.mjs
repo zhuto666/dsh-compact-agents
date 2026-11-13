@@ -28,6 +28,7 @@ const OUR_COMMENT = 'dsh-compact-agents'
  * 随包 preset 里的表达式在 profile 补丁上下文里解析不到 '@deepseek-ai/dsh-agent-preset'：
  * '!!js' 的 baseUrl 是补丁文件自己的目录（此处是 ~/.dsh/profiles/web），而该包只装在 DSH 检出里。
  * 改成从启动入口 process.argv[1] 解析，解析失败只少一个 skill 目录、不炸启动。
+ * 注意它返回的是**数组**（customSkillDirs 要 array(string)），必须写在 key 上，不能当列表项。
  */
 const SAFE_SKILLS_EXPR = "(() => { try { return [process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(process.argv[1]).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')] } catch { return [] } })()"
 
@@ -164,8 +165,11 @@ export function buildOverride(preset, options) {
   const body = configBody(preset.text)
   if (body === null) return null
   const unsafe = body.findIndex(line => line.includes('createRequire(baseUrl)'))
-  if (unsafe >= 0) {
-    body[unsafe] = ' '.repeat(indentOf(body[unsafe])) + '- !!js ' + SAFE_SKILLS_EXPR
+  if (unsafe > 0 && /^\s*customSkillDirs:\s*$/.test(body[unsafe - 1])) {
+    // 随包这里是「customSkillDirs:」+「- !!js <返回字符串>」。SAFE_SKILLS_EXPR 返回数组（失败给 []），
+    // 原样留在列表项里会变成 [[路径]]，skill-filesystem 要 array(string)，整份 preset 挂载失败。
+    body.splice(unsafe - 1, 2,
+      ' '.repeat(indentOf(body[unsafe - 1])) + 'customSkillDirs: !!js ' + SAFE_SKILLS_EXPR)
   }
   ensureBasicConfig(body, options.thresholdRatio, options.retainRatio)
   ensureCompactionRow(body, options.entry)

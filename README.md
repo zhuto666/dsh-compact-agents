@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.10.1-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,16 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.10.2 — 2026-11-14
+
+**修复**
+
+- **`标准模式` / `创造模式` 在设置里显示「加载失败」**：preset 覆盖块把 `skill-filesystem.customSkillDirs` 生成成「`customSkillDirs:` + `- !!js <表达式>`」，而该表达式返回的是数组 —— 留在列表项里就变成 `[[路径]]`，`skill-filesystem` 的 schema 要 `array(string)`，整份 preset 挂载失败。只有带这一行的 standard / cordis 两个预设中招（minimal / ptc 没有这行，一直正常）。现在把表达式直接写在 key 上（`customSkillDirs: !!js …`，解析失败仍是 `[]`），并在 `preset-overrides-test.mjs` 加守卫：再生成「列表项里的数组表达式」直接 FAIL。
+
+**不变**
+
+- 工具行为、参数、界面均未改动。已装用户下一次启动的自愈会按新模板重写这两份 preset，不需要手工改配置。
 
 ### 0.10.1 — 2026-11-13
 
