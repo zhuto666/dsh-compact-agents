@@ -37,7 +37,35 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { currentPresetThreshold, currentPresetValues, liveConfig, onPresetParamsChanged, registerSettings, resolveMaxAutoContinues, resolvePreemptiveRatio } from './settings.js'
 
 export const name = 'dsh-compact-agents'
-export const inject = ['tools', 'compaction', 'agents']
+export const inject = ['tools', 'agents']
+
+/**
+ * 现取 compaction 服务，拿不到返回 undefined。
+ *
+ * 为什么不写进 `inject`：`inject` 里点名的服务在**建立会话**时必须就绪，否则宿主判
+ * `agent-preset/invalid: compact-agents (...): waiting for compaction`，整份 preset 作废、
+ * 新会话直接建不出来。而 `compaction` 恰恰是最可能缺席的那一个 —— billion-context（bili）
+ * 这类代理会在 preset 的 compaction 组里注入自己的策略、把 `compaction-basic` 的 auto 关掉，
+ * 服务在那一刻还没落地（2026-11-17 macOS 实测：新会话全建不出来）。
+ * 因此按可选依赖处理：有就干活，没有就把 `compact_agents` 降级成一条明确报错。
+ *
+ * @param ctx - registrant context。
+ * @returns compaction 服务，或 undefined。
+ */
+function compactionOf(ctx) {
+  try {
+    const viaGet = ctx.get('compaction')
+    if (viaGet !== undefined && viaGet !== null) return viaGet
+  } catch {
+    // 桩 ctx / 更老的宿主可能没有 get()，退回属性读法。
+  }
+  try {
+    // 未 inject 时 cordis 会在这里抛，正是我们要吞掉的那一种；桩 ctx 则直接给值。
+    return ctx.compaction
+  } catch {
+    return undefined
+  }
+}
 
 /** 允许的压缩范围。 */
 const SCOPES = ['others', 'all', 'self', 'ids']
@@ -301,12 +329,8 @@ function matchingPolicy(config, target) {
  * @returns 结果标签，仅用于日志与测试。
  */
 function syncPresetParams(ctx, values = currentPresetValues(), target = null) {
-  let service
-  try {
-    service = ctx.compaction
-  } catch {
-    return 'no-service'
-  }
+  const service = compactionOf(ctx)
+  if (service === undefined) return 'no-service'
   const config = service?.config
   if (config === null || typeof config !== 'object') return 'no-config'
   const override = matchingPolicy(config, target)
@@ -453,7 +477,7 @@ function thresholdState(ctx, session) {
   let mounted = null
   const corrected = patchFailed.get(ctx)
   try {
-    const config = ctx.compaction?.config
+    const config = compactionOf(ctx)?.config
     if (config !== undefined && typeof config === 'object') {
       const override = matchingPolicy(config, routedTargetOf(session))
       const ratio = override?.thresholdRatio ?? config.thresholdRatio
@@ -499,7 +523,7 @@ function effectiveLine(ctx, session) {
   try {
     const target = routedTargetOf(session)
     if (target === null) return null
-    const config = ctx.compaction?.config
+    const config = compactionOf(ctx)?.config
     if (config === null || typeof config !== 'object') return null
     const override = matchingPolicy(config, target)
     const ratio = patchFailed.get(ctx) ?? override?.thresholdRatio ?? config.thresholdRatio
@@ -816,7 +840,9 @@ function scheduleWhenIdle(ctx, agent, options = {}) {
       try {
         // 这是我们自己要求的压缩：它的 token 数不代表策略阈值，别拿它反证热同步。
         markSelfCompaction(agent)
-        result = await ctx.compaction.compactNow(agent, new AbortController().signal)
+        const service = compactionOf(ctx)
+        if (service === undefined) throw new Error('compaction service is not mounted in this preset')
+        result = await service.compactNow(agent, new AbortController().signal)
         ctx.logger.info(result === null
           ? `compact-agents: ${reason} compaction of ${id} found nothing safely compactable`
           : `compact-agents: ${reason} compaction of ${id} shadowed `
@@ -904,7 +930,9 @@ async function compactOne(ctx, agent, signal, whenBusy) {
   try {
     // 同上：工具触发的压缩随时可能发生，不当作阈值证据。
     markSelfCompaction(agent)
-    const result = await ctx.compaction.compactNow(agent, signal)
+    const service = compactionOf(ctx)
+    if (service === undefined) throw new Error('compaction service is not mounted in this preset')
+    const result = await service.compactNow(agent, signal)
     const after = measureTokens(ctx, agent.session)
     if (result === null) {
       return {

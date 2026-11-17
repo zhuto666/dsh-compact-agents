@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,17 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.10.3 — 2026-11-17
+
+**Fixed**
+
+- **No new session could be created once billion-context was installed**: `compaction` was a required entry in `inject`, and billion-context takes over the preset's compaction group, so that service is not up yet when the session is built — the host rejects the whole preset with `agent-preset/invalid: compact-agents (...): waiting for compaction`. The dependency is now optional (`inject = ['tools', 'agents']`, resolved per call via `ctx.get('compaction')`): without the service `compact_agents` returns one clear error instead of taking the host down, and it keeps working if the service shows up later.
+- **The start-up self-heal reset the injection budget `maxBytes` to 65536**: an override block restates the whole config and the packaged preset always says 65536, so a tuned `131072` was overwritten on every install / start-up heal and `~/.dsh/AGENTS.md` got truncated again. It is now preserved like `thresholdRatio` / `retainRatio`, with three guards in `preset-overrides-test.mjs`.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched; existing installs pick both fixes up from the next start-up self-heal.
 
 ### 0.10.2 — 2026-11-14
 

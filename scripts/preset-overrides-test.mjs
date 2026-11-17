@@ -71,6 +71,10 @@ function shippedPreset(name, extra = []) {
     '            config:',
     '              - id: tool-subagent',
     "                name: '@deepseek-ai/dsh-tool-subagent'",
+    '          - id: agent-instructions',
+    "            name: '@deepseek-ai/dsh-agent-instructions'",
+    '            config:',
+    '              maxBytes: 65536',
     ...extra,
     '          - id: compaction',
     '            name: cordis:group',
@@ -142,6 +146,24 @@ check('refresh keeps the tuned block untouched', refreshed.report.every(item => 
   refreshed.report.map(item => item.action).join(','))
 const kept = extractThresholds(refreshed.text.split('\n').slice(0, 60))
 check('extractThresholds reads the tuned value', kept.thresholdRatio === 0.55, String(kept.thresholdRatio))
+
+// ── 3b) 用户调过的注入预算 maxBytes 也要在刷新时被保留 ─────────────────────
+// 覆盖块是整份重述，随包那份恒为 65536；不单独带上用户值，每次 install / 启动自愈都会
+// 把 131072 打回 65536（2026-11-17 实测，注入预算随即又被截断）。
+const budget = refreshed.text.replace(/maxBytes: 65536/g, 'maxBytes: 131072')
+const rescued = syncOverrides(budget, shipped, {
+  entry,
+  thresholdRatio: DEFAULT_THRESHOLD_RATIO,
+  retainRatio: DEFAULT_RETAIN_RATIO,
+  date: '2026-10-17',
+})
+check('refresh keeps the tuned injection budget',
+  (rescued.text.match(/maxBytes: 131072/g) ?? []).length === 2,
+  String((rescued.text.match(/maxBytes: 131072/g) ?? []).length))
+check('refresh does not resurrect the packaged budget', !rescued.text.includes('maxBytes: 65536'))
+check('extractThresholds reads the tuned budget',
+  extractThresholds(budget.split('\n')).maxBytes === 131072,
+  String(extractThresholds(budget.split('\n')).maxBytes))
 
 // ── 4) 自建 preset：只补行/阈值，不重建 config ─────────────────────────────
 const declared = [

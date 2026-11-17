@@ -57,7 +57,10 @@ function readAsarHeader(archive) {
     const headerSize = size.readUInt32LE(12)
     const header = Buffer.alloc(headerSize)
     fs.readSync(fd, header, 0, headerSize, 16)
-    const parsed = { header: JSON.parse(header.toString('utf8')), dataOffset: 16 + headerSize }
+    // JSON 头之后按 4 字节对齐补 padding，文件数据从 padding 之后才开始。
+    // 漏掉它会让每个文件前移 1–3 字节：开头混进上一个文件的尾巴，末尾被截断同样长度。
+    const padding = (4 - (headerSize % 4)) % 4
+    const parsed = { header: JSON.parse(header.toString('utf8')), dataOffset: 16 + headerSize + padding }
     asarHeaders.set(archive, parsed)
     return parsed
   } finally {

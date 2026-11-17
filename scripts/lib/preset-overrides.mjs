@@ -156,9 +156,37 @@ function ensureBasicConfig(body, thresholdRatio, retainRatio) {
 }
 
 /**
+ * 保留用户调过的 `agent-instructions.maxBytes`。
+ *
+ * 覆盖块是**整份重述**（profile 的 `config:` 是整份替换语义），而随包 preset 里那个值恒为
+ * 65536；只重建不带上用户值，每次 install / 启动自愈都会把 131072 打回 65536
+ * （2026-11-17 实测：改完 2 秒被自愈写回，注入预算又被截断）。
+ *
+ * @param body - preset config 行。
+ * @param maxBytes - 要保留的字节数；不是有限数时不动。
+ * @returns 是否改动。
+ */
+function ensureInstructionBudget(body, maxBytes) {
+  if (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes)) return false
+  const row = body.findIndex(line => /^\s*- id: agent-instructions$/.test(line))
+  if (row < 0) return false
+  const baseIndent = indentOf(body[row])
+  for (let i = row + 1; i < body.length; i += 1) {
+    const next = /^(\s*)- id: /.exec(body[i])
+    if (next !== null && next[1].length <= baseIndent) break
+    const hit = /^(\s*)maxBytes:\s*(\d+)\s*(?:#.*)?$/.exec(body[i])
+    if (hit === null) continue
+    if (Number(hit[2]) === maxBytes) return false
+    body[i] = hit[1] + 'maxBytes: ' + maxBytes
+    return true
+  }
+  return false
+}
+
+/**
  * 生成一份 profile 顶层覆盖块。
  * @param preset - listShippedPresets() 的一项。
- * @param options - entry / thresholdRatio / retainRatio / date。
+ * @param options - entry / thresholdRatio / retainRatio / maxBytes / date。
  * @returns 行数组；结构不认识时为 null。
  */
 export function buildOverride(preset, options) {
@@ -172,13 +200,14 @@ export function buildOverride(preset, options) {
       ' '.repeat(indentOf(body[unsafe - 1])) + 'customSkillDirs: !!js ' + SAFE_SKILLS_EXPR)
   }
   ensureBasicConfig(body, options.thresholdRatio, options.retainRatio)
+  ensureInstructionBudget(body, options.maxBytes)
   ensureCompactionRow(body, options.entry)
   const date = options.date ?? new Date().toLocaleDateString('sv-SE')
   return [
     '# ' + date + ' (dsh-compact-agents): 把本插件装进 DSH 内置 ' + preset.name + ' 预设。',
     '# 由 scripts/install.mjs 按随包 ' + path.basename(preset.file) + ' 生成：整份重述 config，',
     '# 只多两处 —— compaction realm 内的 compact-agents 行、compaction-basic 的阈值。',
-    '# DSH 升级后重跑 install 会按新随包内容刷新本块（已有阈值会被保留）。',
+    '# DSH 升级后重跑 install 会按新随包内容刷新本块（已有阈值与 maxBytes 会被保留）。',
     '- id: ' + preset.rowId,
     "  name: '@deepseek-ai/dsh-agent-preset'",
     '  config:',
@@ -294,9 +323,9 @@ export function findBlock(lines, rowId) {
 }
 
 /**
- * 读块内 compaction-basic 的既有阈值（覆盖时保留用户调过的值）。
+ * 读块内要保留的用户值：compaction-basic 的阈值与 agent-instructions 的注入预算。
  * @param lines - 块的行。
- * @returns '{ thresholdRatio, retainRatio }'，读不到时为空对象。
+ * @returns '{ thresholdRatio, retainRatio, maxBytes }'，读不到时缺项。
  */
 export function extractThresholds(lines) {
   const values = {}
@@ -305,6 +334,8 @@ export function extractThresholds(lines) {
     if (threshold !== null) values.thresholdRatio = Number(threshold[1])
     const retain = /^\s*retainRatio:\s*([0-9.]+)\s*(?:#.*)?$/.exec(line)
     if (retain !== null) values.retainRatio = Number(retain[1])
+    const budget = /^\s*maxBytes:\s*(\d+)\s*(?:#.*)?$/.exec(line)
+    if (budget !== null) values.maxBytes = Number(budget[1])
   }
   return values
 }
@@ -357,6 +388,7 @@ export function syncOverrides(text, presets, options) {
       ...options,
       thresholdRatio: kept.thresholdRatio ?? options.thresholdRatio ?? DEFAULT_THRESHOLD_RATIO,
       retainRatio: kept.retainRatio ?? options.retainRatio ?? DEFAULT_RETAIN_RATIO,
+      maxBytes: kept.maxBytes ?? options.maxBytes,
     })
     if (block === null) {
       report.push({ name: preset.name, action: 'skip', detail: '结构不认识（没有 6 空格 config: 块）' })

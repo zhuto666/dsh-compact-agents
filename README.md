@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,17 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.10.3 — 2026-11-17
+
+**修复**
+
+- **装了 billion-context 之后新会话一条都建不出来**：`compaction` 被写成 `inject` 的必填项，而 billion-context 会把 preset 的压缩组接管、那个服务在建立会话时还没落地，宿主直接判 `agent-preset/invalid: compact-agents (...): waiting for compaction`，整份 preset 作废、新对话全建不出来。现在按可选依赖处理（`inject = ['tools', 'agents']`，用 `ctx.get('compaction')` 现取）：服务不在时 `compact_agents` 只回一条明确错误，不再拖垮宿主；服务后到也能照常压缩。
+- **启动自愈把注入预算 `maxBytes` 打回 65536**：覆盖块是整份重述，随包那份恒为 65536，用户调过的 `131072` 每次 install / 启动自愈都被冲掉，`~/.dsh/AGENTS.md` 随即被截断。现在与 `thresholdRatio` / `retainRatio` 同等对待，从既有块里读回并保留，`preset-overrides-test.mjs` 加三条守卫。
+
+**不变**
+
+- 工具行为、参数、界面均未改动；已装用户下一次启动的自愈会带上这两处修复。
 
 ### 0.10.2 — 2026-11-14
 
