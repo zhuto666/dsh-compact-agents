@@ -6,7 +6,7 @@
 
 Force compaction that ignores the automatic threshold · covers every live session in the process (main session / ordinary sub-agents / AgentTeams members) · a busy target is queued and compacted as soon as its turn ends · per-target reporting of shadowed node count and estimated tokens · compaction is visible in the conversation · auto-continues when a turn is cut off by the output limit · compacts pre-emptively at the end of a turn so a reply no longer opens with a wait · the parameters are editable on their own page in Settings · zero network, zero dependencies, no build step
 
-[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,17 @@ Changing a plugin `.js` file (including `client-host.js` / `settings.js`) or any
 ## Changelog
 
 Only changes that **affect how you use the plugin** are listed: behaviour, parameters, UI, installation, and fixes you can notice. Documentation, screenshots and badge-only changes are intentionally omitted here — look them up in the git history. Versions follow [Semantic Versioning](https://semver.org/); the date is the commit date of that release. This repository does not use tags — except for the newest entry, each version heading links to the commit it was released from.
+
+### 0.10.3 — 2026-11-23
+
+**Fixed**
+
+- **The macOS desktop app installed but stayed inert**: the start-up self-heal has to know *where the running DSH lives* (its shipped presets are inside that tree) before it can add the preset mount row; the old code only knew the source checkout plus `DSH_CHECKOUT` / `DSH_HARNESS`, and on macOS `process.argv` carries no dsh root and there is no `dsh` launcher on PATH — so every start ended in a silent `skipped`, and neither the tool nor the settings page appeared, with no error anywhere. The host's own `DSH_INSTALL_DIR` (which `dsh-shell-env` sets to `dirname(profile.installAnchor)`, with no platform branch) now seeds resolution **ahead of** the dev checkout, plus the fixed locations of a packaged install: `Contents/Resources/app.asar/dsh` on macOS, `resources/app.asar/dsh` on Windows, and the two common macOS app directories. Windows had the same symptom from the other side: the old order picked the `D:\dy\deepseek-harness` 0.2.1 checkout and edited the profile of the 0.2.2 install that was actually running.
+- **`runtime-discovery-test.mjs`**: three assertions lock the fix in — the packaged layout resolves, `DSH_INSTALL_DIR` beats `DSH_HARNESS`, and an all-seeds-miss throws with `cannot locate the DSH runtime` in the message.
+
+**Unchanged**
+
+- Tool behaviour, parameters and UI are untouched; existing installs keep the same start-up self-heal, which can now finally find the runtime.
 
 ### 0.10.2 — 2026-11-14
 

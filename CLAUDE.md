@@ -31,8 +31,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```sh
-npm test                              # 全套 9 个脚本(顺序见 package.json scripts.test)
+npm test                              # 全套 11 个脚本(顺序见 package.json scripts.test)
 node scripts/selftest.mjs             # 单跑：模块导入 + defineTool 规格 + 参数枚举
+node scripts/runtime-discovery-test.mjs # 单跑：运行时根发现(打包安装 DSH_INSTALL_DIR 优先 / 种子顺序 / 全落空报错)
 node scripts/deferred-test.mjs        # 单跑：忙 → 排队 → idle 补压(假 ctx，不起 DSH)
 node scripts/settings-test.mjs        # 单跑：真 schemastery + 真 Context + preset 文本手术
 node scripts/compose-test.mjs         # 单跑：真 FileSettingsProvider + 复刻 preset isolate 语义

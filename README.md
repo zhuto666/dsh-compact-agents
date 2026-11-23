@@ -6,7 +6,7 @@
 
 强制压缩忽略自动阈值 · 覆盖进程内所有活会话（主会话 / 普通子代理 / AgentTeams 成员） · 忙的目标自动排队、本轮结束立即补压 · 逐目标回报遮蔽节点数与估算 token 数 · 压缩过程在对话区可见 · 一轮结束时提前压缩，回答开头不再干等 · 被输出上限截断时自动续写 · 参数在设置里自成一页直接改 · 零网络、零依赖、无构建步骤
 
-[![version](https://img.shields.io/badge/version-0.10.2-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
+[![version](https://img.shields.io/badge/version-0.10.3-4176E6)](https://github.com/zhuto666/dsh-compact-agents)
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![dsh](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6)](https://github.com/deepseek-ai/deepseek-harness)
@@ -283,6 +283,17 @@ npm test                            # 自检 / 行为 / 真机集成 / 设置面
 ## 更新历史
 
 只记**影响使用的改动**：插件行为、参数、界面、安装，以及会被使用者感知到的修复。纯文档 / 配图 / 徽章这类改动不列入本表（要查去 git 历史）。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为该版本的提交日；本仓库不使用 tag，除最新一条外，版本号标题都链接到对应的提交。
+
+### 0.10.3 — 2026-11-23
+
+**修复**
+
+- **macOS 桌面版装完不生效**：启动自愈要先知道"正在跑的这套 DSH 在哪儿"（随包 preset 在里面），才补得上 preset 挂载行；旧代码只认源码检出与 `DSH_CHECKOUT` / `DSH_HARNESS`，而 Mac 上 `process.argv` 不带 dsh 根、PATH 里也没有 `dsh` 启动器，于是每次启动都静默 `skipped` —— 表现就是工具与设置界面都不出现，且没有任何报错。现在把宿主自己 export 的 `DSH_INSTALL_DIR`（`dsh-shell-env` 里的 `dirname(profile.installAnchor)`，无平台分支）排在开发检出**之前**，并补上打包安装的固定位置：macOS `Contents/Resources/app.asar/dsh`、Windows `resources/app.asar/dsh`，外加两个常见 macOS 安装目录。Windows 上同一处也有症状：以前会错用 `D:\dy\deepseek-harness` 那套 0.2.1 检出，去改正在跑的 0.2.2 的 profile。
+- **`runtime-discovery-test.mjs`**：三条断言锁住这次修复 —— 打包布局能解析、`DSH_INSTALL_DIR` 优先于 `DSH_HARNESS`、种子全落空时报错里带 `cannot locate the DSH runtime`。
+
+**不变**
+
+- 工具行为、参数、界面均未改动；已装用户下一次启动的自愈照旧，只是这次终于能定位到运行时。
 
 ### 0.10.2 — 2026-11-14
 

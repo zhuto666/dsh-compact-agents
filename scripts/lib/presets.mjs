@@ -293,11 +293,38 @@ function shippedPresetDir(runtime) {
 }
 
 /**
+ * 打包安装（Electron 桌面版）里 dsh 根的位置候选 —— 不依赖环境变量。
+ *
+ * macOS 上进程是 `Contents/MacOS/<exe>`，dsh 在同一 bundle 的
+ * `Contents/Resources/app.asar/dsh`；Windows 上 exe 旁边是 `resources/app.asar/dsh`。
+ * 再补两个 macOS 常见安装位置，供 env 与 argv 都拿不到时兜底。
+ * @returns 候选路径列表（可能都不存在，调用方逐个试）。
+ */
+function packagedRuntimeCandidates() {
+  const exeDir = path.dirname(process.execPath)
+  const candidates = [
+    process.platform === 'darwin'
+      ? path.join(path.dirname(exeDir), 'Resources/app.asar/dsh')
+      : path.join(exeDir, 'resources/app.asar/dsh'),
+  ]
+  if (process.platform === 'darwin') {
+    candidates.push(
+      '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh',
+      path.join(os.homedir(), 'Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh'),
+    )
+  }
+  return candidates
+}
+
+/**
  * 定位 DSH **运行时根**：既能是源码检出，也能是打包安装（asar 内）。
  *
  * `resolveDshCheckout` 只认检出（它要借 js-yaml 与 vendor），而"随包 preset 在哪儿"
  * 对这个插件是刚需 —— 桌面版把 preset 封在 app.asar 里，用检出的那套去找会读到**另一个
  * DSH 版本**的 preset（本机就是这么把子代理工具行写坏的：dev 检出 vs 打包版已经漂移）。
+ * 种子顺序刻意让**宿主自己声明的安装位置**（`DSH_INSTALL_DIR`）排在开发检出之前：
+ * 它指向正在跑的那套 dsh，而 `DSH_CHECKOUT` / 家目录里的克隆是另一代版本 —— 顺序反了
+ * 就会按 0.2.1 的 preset 去改 0.2.2 的 profile（本机踩过：写坏子代理工具行）。
  * @param explicit - `--dsh` / `$DSH_CHECKOUT` / `$DSH_INSTALL_ANCHOR` 给出的路径。
  * @returns 运行时根；找不到时抛出。
  */
@@ -306,6 +333,11 @@ export function resolveDshRuntime(explicit) {
     explicit,
     process.env.DSH_INSTALL_ANCHOR,
     process.env.DSH_CHECKOUT,
+    // 桌面宿主 export 给插件进程的安装位置（`<装着 dsh 的目录>/node_modules/@deepseek-ai/dsh`）。
+    // macOS 上 process.argv 不带 dsh 根、PATH 上多半也没有 dsh 启动器，这条是打包安装唯一
+    // 稳定的线索 —— 缺了它自愈直接 skipped，插件永远挂不上 preset（表现就是"mac 版不生效"）。
+    process.env.DSH_INSTALL_DIR,
+    ...packagedRuntimeCandidates(),
     process.env.DSH_HARNESS,
     // 打包版把 dsh 根作为 argv 的第二参交给桌面宿主（`… --expose-internals <dsh 根> <profile>`）。
     typeof process.argv[1] === 'string' ? process.argv[1] : undefined,
